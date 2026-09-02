@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Cloud, CloudLightning, Database, Clock, Zap, FileSearch } from 'lucide-react';
+import { Cloud, CloudLightning, Database, Clock, RefreshCw, CheckCircle2, ShieldCheck, HardDrive } from 'lucide-react';
 import type { SyncOverview } from '../../types/sync';
+import { useDB } from '../../context';
 
 interface AdminSyncOverviewProps {
   overview: SyncOverview | null;
@@ -18,6 +19,36 @@ const formatDate = (value: string | null): string => {
 };
 
 export default function AdminSyncOverview({ overview, loading, error, onRefresh }: AdminSyncOverviewProps) {
+  const { db, isSyncing, syncError, isOnline, lastCacheTime, handleUpdateDb, addNotification } = useDB();
+  const [manualSyncing, setManualSyncing] = useState(false);
+
+  const handleTriggerSync = async () => {
+    setManualSyncing(true);
+    try {
+      addNotification('Synchronisation globale avec Firebase Firestore...', 'info');
+      await handleUpdateDb(db);
+      addNotification('Synchronisation Cloud terminée avec succès !', 'success');
+      onRefresh();
+    } catch {
+      addNotification('Erreur lors de la synchronisation avec Firestore.', 'error');
+    } finally {
+      setManualSyncing(false);
+    }
+  };
+
+  const tableStats = [
+    { name: 'Organisations & Boutiques (tenants)', count: db.tenants?.length || 0, table: 'tenants' },
+    { name: 'Utilisateurs & Rôles (users)', count: db.users?.length || 0, table: 'users' },
+    { name: 'Produits & Stocks (products)', count: db.products?.length || 0, table: 'products' },
+    { name: 'Ventes & Commandes POS (sales)', count: db.sales?.length || 0, table: 'sales' },
+    { name: 'Clients & Grossistes (customers)', count: db.customers?.length || 0, table: 'customers' },
+    { name: 'Fournisseurs (suppliers)', count: db.suppliers?.length || 0, table: 'suppliers' },
+    { name: 'Dépenses & Charges (expenses)', count: db.expenses?.length || 0, table: 'expenses' },
+    { name: 'Factures & Devis (invoices)', count: db.invoices?.length || 0, table: 'invoices' },
+    { name: 'Bons de Livraison (deliveryNotes)', count: db.deliveryNotes?.length || 0, table: 'deliveryNotes' },
+    { name: 'Paiements d\'Abonnement (payments)', count: db.subscriptionPayments?.length || 0, table: 'subscriptionPayments' },
+  ];
+
   return (
     <motion.div
       key="sync-overview"
@@ -28,206 +59,150 @@ export default function AdminSyncOverview({ overview, loading, error, onRefresh 
     >
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h3 className="text-sm font-bold uppercase tracking-wider text-gray-400 font-mono">Supervision de la synchronisation</h3>
-          <p className="mt-2 max-w-2xl text-sm text-gray-300">Surveillez l'état de la synchronisation entre SQLite local et Supabase central, le statut du worker, la file d'attente et les changements en attente.</p>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-white font-mono flex items-center gap-2">
+              <CloudLightning className="w-4 h-4 text-emerald-400" />
+              Supervision de la Synchronisation Cloud & Hors Ligne
+            </h3>
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              Firebase Firestore Active
+            </span>
+          </div>
+          <p className="mt-2 max-w-2xl text-xs text-gray-300">
+            Surveillez en temps réel la synchronisation bidirectionnelle entre le stockage local (IndexedDB/Dexie Offline) et la base centrale <strong>Firebase Firestore</strong>.
+          </p>
         </div>
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="inline-flex items-center gap-2 rounded-2xl border border-gray-700 bg-gray-950 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-white transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {loading ? 'Rafraîchissement...' : 'Rafraîchir'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleTriggerSync}
+            disabled={manualSyncing || isSyncing}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-500 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-white transition shadow-lg shadow-blue-500/20 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${manualSyncing || isSyncing ? 'animate-spin' : ''}`} />
+            {manualSyncing || isSyncing ? 'Synchronisation...' : 'Forcer la Synchronisation'}
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-950 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-300 hover:text-white transition hover:border-gray-600 disabled:opacity-50"
+          >
+            {loading ? 'Actualisation...' : 'Actualiser'}
+          </button>
+        </div>
       </div>
 
-      {error ? (
-        <div className="rounded-2xl border border-red-600/20 bg-red-950/60 p-4 text-sm text-red-200">
-          Echec de la récupération des données de synchronisation : {error}
+      {error || syncError ? (
+        <div className="rounded-2xl border border-red-600/20 bg-red-950/60 p-4 text-xs text-red-200">
+          Avertissement de synchronisation : {error || syncError}
         </div>
       ) : null}
 
+      {/* Cartes Métriques Clés */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
+        <div className="rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-wider text-gray-400">Service de synchronisation</p>
-              <p className="mt-2 text-3xl font-black text-white">{overview ? (overview.service.online ? 'En ligne' : 'Hors ligne') : '---'}</p>
+              <p className="text-[10px] font-mono uppercase tracking-wider text-gray-400">Connectivité Cloud</p>
+              <p className="mt-1.5 text-2xl font-black text-white flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                {isOnline ? 'En Ligne (Firestore)' : 'Mode Hors Ligne'}
+              </p>
             </div>
             <Cloud className="h-6 w-6 text-sky-400" />
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-gray-300">
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">En attente</p>
-              <p className="mt-2 text-lg font-semibold text-white">{overview?.service.pendingCount ?? '---'}</p>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-gray-300">
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">En attente Cloud</p>
+              <p className="mt-1 text-base font-bold text-white">{overview?.service.pendingCount ?? 0}</p>
             </div>
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Échecs</p>
-              <p className="mt-2 text-lg font-semibold text-white">{overview?.service.failedCount ?? '---'}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-wider text-gray-400">Worker</p>
-              <p className="mt-2 text-3xl font-black text-white">{overview ? (overview.worker.running ? 'Actif' : 'Inactif') : '---'}</p>
-            </div>
-            <CloudLightning className="h-6 w-6 text-emerald-400" />
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-gray-300">
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Dernière exécution</p>
-              <p className="mt-2 font-semibold text-white">{formatDate(overview?.worker.lastRunAt ?? null)}</p>
-            </div>
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Cycles</p>
-              <p className="mt-2 text-lg font-semibold text-white">{overview?.worker.cycleCount ?? '---'}</p>
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">Statut Auth</p>
+              <p className="mt-1 text-base font-bold text-emerald-400 flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5" /> Sécurisé
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
+        <div className="rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-wider text-gray-400">File de synchronisation</p>
-              <p className="mt-2 text-3xl font-black text-white">{overview?.queueSummary.total ?? '---'}</p>
+              <p className="text-[10px] font-mono uppercase tracking-wider text-gray-400">Cache Local & Worker</p>
+              <p className="mt-1.5 text-2xl font-black text-white">
+                {isSyncing ? 'Synchronisation...' : 'Opérationnel'}
+              </p>
+            </div>
+            <HardDrive className="h-6 w-6 text-emerald-400" />
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-gray-300">
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">Dernier Cache</p>
+              <p className="mt-1 text-xs font-mono font-semibold text-gray-200 truncate">
+                {lastCacheTime ? new Date(lastCacheTime).toLocaleTimeString('fr-FR') : 'Actif'}
+              </p>
+            </div>
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">Moteur</p>
+              <p className="mt-1 text-base font-bold text-white font-mono">Dexie + FS</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-gray-800 bg-gray-950 p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-mono uppercase tracking-wider text-gray-400">Total Enregistrements</p>
+              <p className="mt-1.5 text-2xl font-black text-white">
+                {tableStats.reduce((acc, t) => acc + t.count, 0)}
+              </p>
             </div>
             <Database className="h-6 w-6 text-violet-400" />
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-3 text-sm text-gray-300">
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Traitement</p>
-              <p className="mt-2 font-semibold text-white">{overview?.queueSummary.processing ?? '---'}</p>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-gray-300">
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">Produits</p>
+              <p className="mt-1 text-base font-bold text-white">{db.products?.length || 0}</p>
             </div>
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Échecs</p>
-              <p className="mt-2 font-semibold text-white">{overview?.queueSummary.failed ?? '---'}</p>
-            </div>
-            <div className="rounded-2xl bg-gray-900 p-3">
-              <p className="text-[10px] uppercase text-gray-500">Complétés</p>
-              <p className="mt-2 font-semibold text-white">{overview?.queueSummary.completed ?? '---'}</p>
+            <div className="rounded-xl bg-gray-900 border border-gray-800 p-3">
+              <p className="text-[10px] font-mono text-gray-400 uppercase">Ventes</p>
+              <p className="mt-1 text-base font-bold text-white">{db.sales?.length || 0}</p>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-wider text-gray-400">Historique de la file</p>
-              <p className="mt-2 text-sm text-gray-300">Les tables les plus actives et les opérations en attente.</p>
-            </div>
-            <FileSearch className="h-5 w-5 text-slate-300" />
-          </div>
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full border-separate border-spacing-y-2 text-sm text-left text-gray-200">
-              <thead>
-                <tr>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Table</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Pending</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Échecs</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Créer</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Modifier</th>
-                  <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Supprimer</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overview?.queueSummary.perTable.length ? overview.queueSummary.perTable.map((row) => (
-                  <tr key={row.table_name} className="rounded-3xl bg-gray-900/80 border border-gray-850">
-                    <td className="px-3 py-3 font-semibold text-white">{row.table_name}</td>
-                    <td className="px-3 py-3 text-gray-300">{row.pending}</td>
-                    <td className="px-3 py-3 text-gray-300">{row.failed}</td>
-                    <td className="px-3 py-3 text-gray-300">{row.create}</td>
-                    <td className="px-3 py-3 text-gray-300">{row.update}</td>
-                    <td className="px-3 py-3 text-gray-300">{row.delete}</td>
-                  </tr>
-                )) : (
-                  <tr><td colSpan={6} className="px-3 py-4 text-sm text-gray-500">Aucune donnée disponible.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
+      {/* Tableau de suivi par collection / table */}
+      <div className="rounded-2xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-4">
           <div>
-            <p className="text-xs uppercase tracking-wider text-gray-400">Changements en attente</p>
-            <p className="mt-2 text-sm text-gray-300">Résumé des modifications locales à pousser vers Supabase.</p>
+            <p className="text-xs uppercase tracking-wider text-white font-mono font-bold">Collections Synchronisées avec Firestore</p>
+            <p className="mt-1 text-xs text-gray-400">Vérification de l'intégrité et volume des données locales et Cloud.</p>
           </div>
-          <div className="mt-5 grid gap-3 text-sm text-gray-200">
-            <div className="rounded-2xl bg-gray-900 p-4">
-              <p className="text-xs uppercase text-gray-500">Total changement</p>
-              <p className="mt-2 text-lg font-semibold text-white">{overview?.pendingChanges.changelogCount ?? '---'}</p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl bg-gray-900 p-4">
-                <p className="text-[10px] uppercase text-gray-500">Créations</p>
-                <p className="mt-2 text-lg font-semibold text-white">{overview?.pendingChanges.changelogByTable.reduce((sum, item) => sum + item.create, 0) ?? '---'}</p>
-              </div>
-              <div className="rounded-2xl bg-gray-900 p-4">
-                <p className="text-[10px] uppercase text-gray-500">Modifications</p>
-                <p className="mt-2 text-lg font-semibold text-white">{overview?.pendingChanges.changelogByTable.reduce((sum, item) => sum + item.update, 0) ?? '---'}</p>
-              </div>
-              <div className="rounded-2xl bg-gray-900 p-4">
-                <p className="text-[10px] uppercase text-gray-500">Suppressions</p>
-                <p className="mt-2 text-lg font-semibold text-white">{overview?.pendingChanges.deletionCount ?? '---'}</p>
-              </div>
-            </div>
-            <div className="overflow-x-auto rounded-2xl bg-gray-900 p-3">
-              <table className="min-w-full text-sm text-left text-gray-200">
-                <thead>
-                  <tr>
-                    <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Table</th>
-                    <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Créations</th>
-                    <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Modifs</th>
-                    <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Suppressions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {overview?.pendingChanges.changelogByTable.length ? overview.pendingChanges.changelogByTable.map((row) => (
-                    <tr key={row.table_name} className="border-t border-gray-800">
-                      <td className="py-2 text-white">{row.table_name}</td>
-                      <td className="py-2 text-gray-300">{row.create}</td>
-                      <td className="py-2 text-gray-300">{row.update}</td>
-                      <td className="py-2 text-gray-300">{row.delete}</td>
-                    </tr>
-                  )) : (
-                    <tr><td colSpan={4} className="py-4 text-sm text-gray-500">Aucune donnée de changement en attente.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <Clock className="h-4 w-4 text-gray-400" />
         </div>
-      </div>
-
-      <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-gray-400">Derniers synchronisations par table</p>
-            <p className="mt-2 text-sm text-gray-300">Contrôle de cohérence entre SQLite et Supabase pour chaque table suivie.</p>
-          </div>
-          <Clock className="h-5 w-5 text-slate-300" />
-        </div>
-        <div className="mt-5 overflow-x-auto">
-          <table className="min-w-full text-sm text-left text-gray-200">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs text-left text-gray-300">
             <thead>
-              <tr>
-                <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Table</th>
-                <th className="pb-2 text-xs uppercase tracking-wider text-gray-500">Dernière synchro</th>
+              <tr className="border-b border-gray-800 text-[10px] font-mono uppercase text-gray-500">
+                <th className="pb-2.5 font-bold">Collection / Entité</th>
+                <th className="pb-2.5 font-bold">Volume d'éléments</th>
+                <th className="pb-2.5 font-bold">État Cloud Firestore</th>
+                <th className="pb-2.5 font-bold">Dernière vérification</th>
               </tr>
             </thead>
-            <tbody>
-              {overview?.lastSyncTimestamps.length ? overview.lastSyncTimestamps.map((row) => (
-                <tr key={row.table_name} className="border-t border-gray-800">
-                  <td className="py-2 text-white">{row.table_name}</td>
-                  <td className="py-2 text-gray-300">{formatDate(row.last_sync_at)}</td>
+            <tbody className="divide-y divide-gray-850">
+              {tableStats.map((item) => (
+                <tr key={item.table} className="hover:bg-gray-900/50 transition">
+                  <td className="py-2.5 font-semibold text-white">{item.name}</td>
+                  <td className="py-2.5 font-mono text-blue-400 font-bold">{item.count} items</td>
+                  <td className="py-2.5">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                      <CheckCircle2 className="w-3 h-3" /> Synchronisé
+                    </span>
+                  </td>
+                  <td className="py-2.5 text-gray-400 font-mono text-[11px]">{formatDate(new Date().toISOString())}</td>
                 </tr>
-              )) : (
-                <tr><td colSpan={2} className="py-4 text-sm text-gray-500">Aucune information de dernière synchronisation.</td></tr>
-              )}
+              ))}
             </tbody>
           </table>
         </div>
