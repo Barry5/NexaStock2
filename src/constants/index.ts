@@ -320,3 +320,184 @@ export const ROLE_SPECS: Record<string, { label: string; desc: string }> = {
     desc: 'Accès en visualisation pure sur l\'ensemble de l\'activité.',
   }
 };
+
+export interface SystemModuleConfig {
+  key: string;
+  label: string;
+  category: 'Général' | 'Commerce' | 'Finances' | 'Logistique' | 'Intelligence' | 'Sécurité';
+  description: string;
+  icon: string;
+  is_core: boolean;
+  display_order: number;
+  color: string;
+}
+
+export const DEFAULT_MODULE_DEFINITIONS: SystemModuleConfig[] = [
+  {
+    key: 'dashboard',
+    label: 'Tableau de bord',
+    category: 'Général',
+    description: 'Indicateurs clés de performance, statistiques de vente et alertes d\'activité en temps réel.',
+    icon: 'LayoutDashboard',
+    is_core: true,
+    display_order: 1,
+    color: 'blue'
+  },
+  {
+    key: 'products',
+    label: 'Produits & Stocks',
+    category: 'Commerce',
+    description: 'Gestion du catalogue, codes-barres, seuils d\'alerte et mouvements de stock.',
+    icon: 'Package',
+    is_core: false,
+    display_order: 2,
+    color: 'amber'
+  },
+  {
+    key: 'sales',
+    label: 'Point de Vente (POS)',
+    category: 'Commerce',
+    description: 'Interface de caisse rapide, panier tactile, encaissements et tickets de caisse.',
+    icon: 'ShoppingBag',
+    is_core: false,
+    display_order: 3,
+    color: 'emerald'
+  },
+  {
+    key: 'invoices',
+    label: 'Facturation ERP & Devis',
+    category: 'Finances',
+    description: 'Émission de factures professionnelles, devis, acomptes et avoirs normalisés.',
+    icon: 'FileText',
+    is_core: false,
+    display_order: 4,
+    color: 'blue'
+  },
+  {
+    key: 'delivery-notes',
+    label: 'Bons de Livraison (BL)',
+    category: 'Logistique',
+    description: 'Gestion des expéditions, bordereaux de livraison et validation des réceptions.',
+    icon: 'Truck',
+    is_core: false,
+    display_order: 5,
+    color: 'cyan'
+  },
+  {
+    key: 'customers',
+    label: 'Clients & Grossistes (CRM)',
+    category: 'Commerce',
+    description: 'Fichier clients, suivi des encours de crédit et historique d\'achats.',
+    icon: 'Users',
+    is_core: false,
+    display_order: 6,
+    color: 'indigo'
+  },
+  {
+    key: 'expenses',
+    label: 'Dépenses & Trésorerie',
+    category: 'Finances',
+    description: 'Registre des charges d\'exploitation, dettes, emprunts et état financier.',
+    icon: 'Coins',
+    is_core: false,
+    display_order: 7,
+    color: 'rose'
+  },
+  {
+    key: 'ai',
+    label: 'Assistant IA Gemini',
+    category: 'Intelligence',
+    description: 'Intelligence artificielle prédictive de réapprovisionnement et analyse des tendances.',
+    icon: 'Sparkles',
+    is_core: false,
+    display_order: 8,
+    color: 'purple'
+  },
+  {
+    key: 'commissions',
+    label: 'Commissions & Apporteurs',
+    category: 'Commerce',
+    description: 'Suivi des partenaires apporteurs d\'affaires, calculs et règlements des commissions.',
+    icon: 'Award',
+    is_core: false,
+    display_order: 9,
+    color: 'amber'
+  },
+  {
+    key: 'warehouses',
+    label: 'Multi-Entrepôts & Dépôts',
+    category: 'Logistique',
+    description: 'Gestion de multiples magasins, dépôts de stockage et transferts inter-sites.',
+    icon: 'Building',
+    is_core: false,
+    display_order: 10,
+    color: 'teal'
+  },
+  {
+    key: 'users',
+    label: 'Équipe & Permissions (RBAC)',
+    category: 'Sécurité',
+    description: 'Gestion des comptes collaborateurs, attribution de rôles et droits d\'accès granulaires.',
+    icon: 'ShieldCheck',
+    is_core: false,
+    display_order: 11,
+    color: 'sky'
+  },
+  {
+    key: 'settings',
+    label: 'Paramètres & Forfaits',
+    category: 'Général',
+    description: 'Configuration générale de l\'entreprise, devises, TVA et gestion de l\'abonnement.',
+    icon: 'Settings',
+    is_core: true,
+    display_order: 12,
+    color: 'gray'
+  }
+];
+
+export function getDefaultModulesForPlan(planIdOrName: string = ''): string[] {
+  const norm = planIdOrName.toLowerCase();
+  
+  // Starter / Free / Essai
+  if (norm.includes('free') || norm.includes('starter') || norm.includes('essai') || norm === 'plan-free') {
+    return ['dashboard', 'products', 'sales', 'customers', 'settings'];
+  }
+  
+  // Standard / Business / PME
+  if (norm.includes('standard') || norm.includes('business') || norm === 'plan-standard') {
+    return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'settings'];
+  }
+  
+  // Pro / Entreprise / IA / Annual VIP
+  if (
+    norm.includes('pro') ||
+    norm.includes('premium') ||
+    norm.includes('entreprise') ||
+    norm.includes('annual') ||
+    norm.includes('annuel') ||
+    norm.includes('vip') ||
+    norm.includes('illimite') ||
+    norm.includes('illimité') ||
+    norm === 'plan-premium' ||
+    norm === 'plan-enterprise-annual'
+  ) {
+    return [
+      'dashboard',
+      'products',
+      'sales',
+      'invoices',
+      'delivery-notes',
+      'customers',
+      'expenses',
+      'ai',
+      'commissions',
+      'warehouses',
+      'users',
+      'settings'
+    ];
+  }
+
+  // Default fallback if unknown plan: give Standard bundle
+  return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'settings'];
+}
+
