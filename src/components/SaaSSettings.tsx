@@ -51,11 +51,12 @@ import TeamSettings from './settings/TeamSettings';
 import TenantSettings from './settings/TenantSettings';
 import BackupSettings from './settings/BackupSettings';
 import AdminBackupCenter from './admin/AdminBackupCenter';
+import AdminPlans from './admin/AdminPlans';
 
 
 export default function SaaSSettings() {
   const { db, handleUpdateDb, isSyncing, handleSyncFromServer, addNotification } = useDB();
-  const { activeTenantId, activeUserId, handleSwitchTenant, handleSwitchUser, handleUpdateTenantPlan } = useApp();
+  const { activeTenantId, activeUserId, handleSwitchTenant, handleSwitchUser, handleUpdateTenantPlan, setCurrentTab } = useApp();
   
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
   const activeUser = useMemo(() => db.users.find(u => u.id === activeUserId), [db.users, activeUserId]);
@@ -67,11 +68,18 @@ export default function SaaSSettings() {
   const [passwordVisible, setPasswordVisible] = useState(false);
 
   const isSuperAdmin = activeUser?.role === 'superadmin';
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'boutique' | 'saas' | 'team' | 'tenants' | 'backup' | 'backupcenter'>('boutique');
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'boutique' | 'saas' | 'team' | 'tenants' | 'backup' | 'backupcenter' | 'admin-plans' | 'appearance'>('boutique');
+
+  // Local state for AdminPlans sub-tab
+  const [localGlobalSaaSSettings, setLocalGlobalSaaSSettings] = useState<any>(null);
+  const [localPricingPlans, setLocalPricingPlans] = useState<any[]>([]);
+  const [localSaasCurrency, setLocalSaasCurrency] = useState<string>('EUR');
+  const [isSaaSSettingsSaved, setIsSaaSSettingsSaved] = useState(false);
+  const [isSaaSSettingsSaving, setIsSaaSSettingsSaving] = useState(false);
 
   // Redirect away from superadmin tabs if not superadmin
   React.useEffect(() => {
-    if ((activeSettingsTab === 'tenants' || activeSettingsTab === 'backupcenter') && !isSuperAdmin) {
+    if ((activeSettingsTab === 'tenants' || activeSettingsTab === 'backupcenter' || activeSettingsTab === 'admin-plans') && !isSuperAdmin) {
       setActiveSettingsTab('boutique');
     }
   }, [activeSettingsTab, isSuperAdmin]);
@@ -251,6 +259,71 @@ export default function SaaSSettings() {
         setIsSaved(false);
       }, 3000);
     }, 600);
+  };
+
+  // Sync Admin Plans local state
+  useEffect(() => {
+    setLocalGlobalSaaSSettings(globalSaaSSettings);
+    setLocalPricingPlans(JSON.parse(JSON.stringify(pricingPlans)));
+    setLocalSaasCurrency(db.saasCurrency || 'EUR');
+  }, [globalSaaSSettings, pricingPlans, db.saasCurrency]);
+
+  const handleSavePlanSettings = (idx: number, field: string, value: any) => {
+    setLocalPricingPlans(prev => {
+      const nextPlans = [...prev];
+      if (field.startsWith('limits.')) {
+        const limitField = field.split('.')[1];
+        nextPlans[idx] = {
+          ...nextPlans[idx],
+          limits: {
+            ...nextPlans[idx].limits,
+            [limitField]: Number(value)
+          }
+        };
+      } else {
+        nextPlans[idx] = {
+          ...nextPlans[idx],
+          [field]: field === 'price' || field === 'durationDays' || field === 'displayOrder' ? Number(value) : value
+        };
+      }
+      return nextPlans;
+    });
+  };
+
+  const handleSaveGlobalPaymentsSettings = (field: string, value: any) => {
+    setLocalGlobalSaaSSettings((prev: any) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        [field]: value
+      };
+    });
+  };
+
+  const handleSaveAllSaaSSettings = () => {
+    setIsSaaSSettingsSaving(true);
+    setTimeout(() => {
+      const updatedTenants = db.tenants.map(t => ({
+        ...t,
+        currency: localSaasCurrency
+      }));
+
+      handleUpdateDb({
+        ...db,
+        saasCurrency: localSaasCurrency,
+        globalSaaSSettings: localGlobalSaaSSettings,
+        pricingPlans: localPricingPlans,
+        tenants: updatedTenants
+      });
+
+      setIsSaaSSettingsSaving(false);
+      setIsSaaSSettingsSaved(true);
+      addNotification('Configuration SaaS & Grille des Forfaits sauvegardées avec succès !', 'success');
+
+      setTimeout(() => {
+        setIsSaaSSettingsSaved(false);
+      }, 3000);
+    }, 400);
   };
 
   // Submit offline payment details
@@ -673,6 +746,18 @@ export default function SaaSSettings() {
             <Server className="w-3.5 h-3.5" /> Sauvegardes Système (Root)
           </button>
         )}
+        {isSuperAdmin && (
+          <button
+            onClick={() => setActiveSettingsTab('admin-plans')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold rounded-lg transition ${
+              activeSettingsTab === 'admin-plans'
+                ? 'bg-purple-600 text-white shadow-md'
+                : 'text-purple-300 hover:text-white hover:bg-purple-950/40 border border-purple-500/20'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-400" /> Éditeur de Forfaits SaaS (Superadmin)
+          </button>
+        )}
         <button
           onClick={() => setActiveSettingsTab('backup')}
           className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold rounded-lg transition ${
@@ -756,6 +841,8 @@ export default function SaaSSettings() {
               isSyncing={isSyncing}
               handleSyncFromServer={handleSyncFromServer}
               db={db}
+              isAdmin={isSuperAdmin || activeUser?.role === 'superadmin' || activeUser?.role === 'owner' || activeUser?.role === 'admin'}
+              onOpenAdminPlans={() => setActiveSettingsTab('admin-plans')}
             />
           </motion.div>
         )}
@@ -865,6 +952,27 @@ export default function SaaSSettings() {
             <div className="bg-gray-900 border border-gray-850 rounded-2xl p-5 shadow-xl">
               <AppearanceSettings />
             </div>
+          </motion.div>
+        )}
+
+        {/* TAB: SAAS PLANS EDITOR (SUPER ADMIN) */}
+        {activeSettingsTab === 'admin-plans' && isSuperAdmin && (
+          <motion.div key="admin-plans" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+            <AdminPlans
+              localGlobalSaaSSettings={localGlobalSaaSSettings}
+              globalSaaSSettings={globalSaaSSettings}
+              localPricingPlans={localPricingPlans}
+              pricingPlans={pricingPlans}
+              localSaasCurrency={localSaasCurrency}
+              tenants={db.tenants}
+              setLocalSaasCurrency={setLocalSaasCurrency}
+              setLocalPricingPlans={setLocalPricingPlans}
+              isSaaSSettingsSaved={isSaaSSettingsSaved}
+              isSaaSSettingsSaving={isSaaSSettingsSaving}
+              handleSaveAllSaaSSettings={handleSaveAllSaaSSettings}
+              handleSavePlanSettings={handleSavePlanSettings}
+              handleSaveGlobalPaymentsSettings={handleSaveGlobalPaymentsSettings}
+            />
           </motion.div>
         )}
 

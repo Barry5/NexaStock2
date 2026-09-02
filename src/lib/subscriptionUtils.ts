@@ -15,21 +15,29 @@ const DEFAULT_FREE_PLAN: PricingPlan = {
 };
 
 function normalizePlanValue(value: string | undefined): string {
-  return (value || '').toLowerCase();
+  if (!value) return '';
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /**
  * Resolves the active pricing plan for a tenant from the db's configured plans.
  */
 export function getActivePlan(tenant: Tenant, pricingPlans: PricingPlan[]): PricingPlan {
-  const plan = pricingPlans.find(p => normalizePlanValue(p.name) === normalizePlanValue(String(tenant.plan)))
-    || pricingPlans.find(p => p.id === tenant.subscriptionPlanId);
+  const tPlan = (tenant.plan || '').toLowerCase();
+  const plan = pricingPlans.find(p => {
+    if (p.id === tenant.subscriptionPlanId || p.id === tenant.plan) return true;
+    const pName = p.name.toLowerCase();
+    if (pName === tPlan) return true;
+    if (normalizePlanValue(p.name) === normalizePlanValue(tenant.plan)) return true;
+    if (tPlan && (pName.startsWith(tPlan) || tPlan.startsWith(pName))) return true;
+    return false;
+  });
 
   if (plan) {
     return plan;
   }
 
-  return {
+  return pricingPlans[0] || {
     ...DEFAULT_FREE_PLAN,
     currency: tenant.currency || DEFAULT_FREE_PLAN.currency,
   };

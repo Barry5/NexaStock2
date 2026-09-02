@@ -39,9 +39,145 @@ export const SUBSCRIPTION_STATUS_LABELS: Record<string, string> = {
 };
 
 export const DEFAULT_PRICING_PLANS = [
-  { id: 'plan-free', name: 'Free', description: 'Idéal pour tester l\'application.', price: 0, currency: 'EUR', durationDays: 14, features: ["50 produits max", "1 utilisateur"], limits: { maxProducts: 50, maxSales: 100, maxCustomers: 20, maxUsers: 1 }, color: 'gray', displayOrder: 1, active: true },
-  { id: 'plan-standard', name: 'Standard', description: 'Pour les PME établies.', price: 29, currency: 'EUR', durationDays: 30, features: ["Ventes illimitées", "5 utilisateurs"], limits: { maxProducts: 9999, maxSales: 9999, maxCustomers: 9999, maxUsers: 5 }, color: 'blue', displayOrder: 2, active: true },
-  { id: 'plan-premium', name: 'Premium', description: 'Le summum de l\'intelligence.', price: 79, currency: 'EUR', durationDays: 30, features: ["Gemini AI réappro", "99 utilisateurs"], limits: { maxProducts: 99999, maxSales: 99999, maxCustomers: 99999, maxUsers: 99 }, color: 'purple', displayOrder: 3, active: true }
+  {
+    id: 'plan-free',
+    name: 'Starter / Essai',
+    description: 'Idéal pour démarrer, tester l\'écosystème et évaluer les fonctionnalités.',
+    price: 0,
+    currency: 'EUR',
+    durationDays: 14,
+    badge: 'Essai 14 jours',
+    isPopular: false,
+    billingInterval: 'month' as const,
+    features: [
+      'Point de Vente (POS) & Encaissements',
+      'Jusqu\'à 100 produits dans le catalogue',
+      'Gestion des clients & historique basique',
+      '1 utilisateur / caissier connecté',
+      'Reçus de caisse & Factures standards',
+      'Synchronisation locale hors-ligne'
+    ],
+    limits: {
+      maxProducts: 100,
+      maxSales: 250,
+      maxCustomers: 50,
+      maxUsers: 1,
+      maxWarehouses: 1,
+      storageLimitMb: 100,
+      backupSupported: false,
+      exportSupported: false,
+      apiSupported: false
+    },
+    color: 'gray',
+    displayOrder: 1,
+    active: true
+  },
+  {
+    id: 'plan-standard',
+    name: 'Standard / Business',
+    description: 'La solution complète pour les commerces, boutiques et PME en pleine croissance.',
+    price: 29,
+    currency: 'EUR',
+    durationDays: 30,
+    badge: '⭐ Le Plus Populaire',
+    isPopular: true,
+    billingInterval: 'month' as const,
+    features: [
+      'Ventes & Encaissements POS illimités',
+      'Catalogue jusqu\'à 5 000 articles',
+      'Jusqu\'à 5 utilisateurs et caissiers',
+      'Multi-caisses & Sessions de caisse',
+      'Alertes de stocks bas et réapprovisionnement',
+      'Comptabilité, Factures, Devis & Dépenses',
+      'Exports Excel, CSV et bilans financiers',
+      '2 Entrepôts / Boutiques rattachés',
+      'Support client prioritaire par email & chat'
+    ],
+    limits: {
+      maxProducts: 5000,
+      maxSales: 99999,
+      maxCustomers: 5000,
+      maxUsers: 5,
+      maxWarehouses: 2,
+      storageLimitMb: 1024,
+      backupSupported: true,
+      exportSupported: true,
+      apiSupported: false
+    },
+    color: 'blue',
+    displayOrder: 2,
+    active: true
+  },
+  {
+    id: 'plan-premium',
+    name: 'Pro / Entreprise & IA',
+    description: 'Toute la puissance de l\'IA et du multi-boutiques pour les réseaux et grands distributeurs.',
+    price: 79,
+    currency: 'EUR',
+    durationDays: 30,
+    badge: '👑 Tout Inclus & IA',
+    isPopular: false,
+    billingInterval: 'month' as const,
+    features: [
+      'Tout le forfait Standard inclus',
+      'Produits & Ventes sans aucune limite',
+      'Jusqu\'à 25 collaborateurs avec rôles avancés',
+      'Assistant IA Gemini pour réapprovisionnement prédictif',
+      'Multi-Boutiques & Transferts inter-dépôts illimités',
+      'Gestion avancée des commissions & livreurs',
+      'Sauvegarde Cloud continue & Firestore temps réel',
+      'Rapprochement bancaire & Registre d\'audit',
+      'Support VIP dédié 24/7 avec assistance directe'
+    ],
+    limits: {
+      maxProducts: 999999,
+      maxSales: 999999,
+      maxCustomers: 999999,
+      maxUsers: 25,
+      maxWarehouses: 10,
+      storageLimitMb: 10240,
+      backupSupported: true,
+      exportSupported: true,
+      apiSupported: true
+    },
+    color: 'purple',
+    displayOrder: 3,
+    active: true
+  },
+  {
+    id: 'plan-enterprise-annual',
+    name: 'Illimité Annuel VIP',
+    description: 'Tranquillité totale sur 1 an avec 2 mois offerts et accompagnement personnalisé.',
+    price: 699,
+    currency: 'EUR',
+    durationDays: 365,
+    badge: '🚀 2 Mois Offerts (-20%)',
+    isPopular: false,
+    billingInterval: 'year' as const,
+    features: [
+      'Toutes les fonctionnalités Pro & IA Gemini incluses',
+      'Utilisateurs illimités pour toute l\'organisation',
+      'Nombre de boutiques et dépôts illimités',
+      'Accès direct aux API REST / Webhooks',
+      'Exportation automatique des sauvegardes',
+      'Formation personnalisée de l\'équipe incluse',
+      'Interlocuteur technique dédié et SLA 99.9%'
+    ],
+    limits: {
+      maxProducts: 9999999,
+      maxSales: 9999999,
+      maxCustomers: 9999999,
+      maxUsers: 999,
+      maxWarehouses: 99,
+      storageLimitMb: 51200,
+      backupSupported: true,
+      exportSupported: true,
+      apiSupported: true
+    },
+    color: 'amber',
+    displayOrder: 4,
+    active: true
+  }
 ];
 
 export const DEFAULT_SAAS_SETTINGS = {

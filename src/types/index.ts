@@ -430,6 +430,9 @@ export interface PricingPlan {
   color: string;
   displayOrder: number;
   active: boolean;
+  badge?: string;
+  isPopular?: boolean;
+  billingInterval?: 'month' | 'year' | 'custom';
 }
 
 export interface SubscriptionPayment {

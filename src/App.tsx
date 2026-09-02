@@ -14,6 +14,7 @@ import { LOCAL_CACHE_KEY, DEFAULT_PRICING_PLANS, AUTH_TOKEN_KEY } from './consta
 import { formatCurrency } from './utils';
 import { useAvailableModules, resetModuleCache } from './hooks/useModules';
 import { Header } from './components/Layout/Header';
+import UserProfileModal from './components/UserProfileModal';
 
 const LazyDashboard = lazy(() => import('./components/Dashboard'));
 const LazyProducts = lazy(() => import('./components/Products'));
@@ -56,6 +57,7 @@ function AppShell() {
   const [lockReceiptImage, setLockReceiptImage] = useState('');
 
   // Passwordless Security Configuration States
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [showSecurePasswordModal, setShowSecurePasswordModal] = useState(false);
   const [securePassword, setSecurePassword] = useState('');
   const [securePasswordConfirm, setSecurePasswordConfirm] = useState('');
@@ -222,6 +224,15 @@ function AppShell() {
             <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
             <Cloud className="w-3 h-3 text-gray-400" />
           </div>
+          {activeUser && (
+            <button
+              onClick={() => setShowProfileModal(true)}
+              className={`w-8 h-8 rounded-xl bg-gradient-to-br ${activeUser.avatar || 'from-blue-600 to-indigo-600'} flex items-center justify-center text-xs font-bold text-white shadow-sm border border-white/10`}
+              title="Mon Profil"
+            >
+              {(activeUser.name.slice(0, 2) || 'NX').toUpperCase()}
+            </button>
+          )}
         </div>
       </div>
 
@@ -281,14 +292,31 @@ function AppShell() {
             })}
           </div>
 
-          {/* Footer status */}
-          <div className="p-4 border-t border-gray-800 bg-gray-950/50 flex-shrink-0 space-y-2">
-            <div className="flex items-center justify-between text-xs text-gray-400">
+          {/* User profile card & status footer */}
+          <div className="p-3 border-t border-gray-800 bg-gray-950/70 flex-shrink-0 space-y-2.5">
+            {activeUser && (
+              <button
+                onClick={() => setShowProfileModal(true)}
+                className="w-full flex items-center gap-2.5 p-2 rounded-xl bg-gray-900 hover:bg-gray-850 border border-gray-800 hover:border-gray-700 transition text-left group"
+                title="Modifier mon profil"
+              >
+                <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${activeUser.avatar || 'from-blue-600 to-indigo-600'} flex items-center justify-center text-xs font-black text-white shadow-sm flex-shrink-0`}>
+                  {(activeUser.name.slice(0, 2) || 'NX').toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-white truncate group-hover:text-blue-400 transition">{activeUser.name}</p>
+                  <p className="text-[10px] text-gray-400 font-mono truncate uppercase">{activeUser.role}</p>
+                </div>
+              </button>
+            )}
+
+            <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
               <span className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                {isOnline ? 'Firebase En Ligne' : 'Mode Hors Ligne'}
+                {isOnline ? 'Firebase Cloud' : 'Hors Ligne'}
               </span>
             </div>
+
             <button
               onClick={() => {
                 resetModuleCache();
@@ -298,7 +326,7 @@ function AppShell() {
                 localStorage.removeItem('nexastock_session');
                 localStorage.removeItem('nexastock_token');
               }}
-              className="w-full py-1.5 bg-gray-800 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 text-gray-400 hover:text-red-400 text-xs rounded-lg transition font-mono"
+              className="w-full py-1.5 bg-gray-900 hover:bg-red-500/10 border border-gray-800 hover:border-red-500/30 text-gray-400 hover:text-red-400 text-xs rounded-xl transition font-mono"
             >
               Se déconnecter
             </button>
@@ -675,6 +703,12 @@ function AppShell() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* USER PROFILE & SECURITY MODAL */}
+      <UserProfileModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+      />
     </div>
   );
 }
