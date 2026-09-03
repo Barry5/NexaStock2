@@ -14,9 +14,17 @@ export function Header() {
 
   const handleManualSync = async () => {
     try {
-      addNotification('Synchronisation Firebase Firestore en cours...');
+      addNotification(
+        isSuperAdmin 
+          ? 'Synchronisation Firebase Firestore en cours...' 
+          : 'Synchronisation Cloud sécurisée en cours...'
+      );
       await handleUpdateDb(db);
-      addNotification('Base de données synchronisée avec le Cloud !');
+      addNotification(
+        isSuperAdmin 
+          ? 'Base de données synchronisée avec Firestore !' 
+          : 'Données synchronisées avec succès !'
+      );
     } catch {
       addNotification('Erreur lors de la synchronisation.');
     }
@@ -105,8 +113,11 @@ export function Header() {
                 <CloudOff className="w-3 h-3" /> Offline
               </span>
             ) : (
-              <span className="text-emerald-400 flex items-center gap-1">
-                <Cloud className="w-3 h-3" /> Firestore
+              <span 
+                className="text-emerald-400 flex items-center gap-1"
+                title={isSuperAdmin ? 'Canal direct Firestore actif' : 'Synchronisation Cloud sécurisée en temps réel'}
+              >
+                <Cloud className="w-3 h-3" /> {isSuperAdmin ? 'Firestore' : 'Cloud Sécurisé'}
               </span>
             )}
             <button onClick={handleManualSync} title="Synchroniser" className="text-gray-500 hover:text-white transition">
