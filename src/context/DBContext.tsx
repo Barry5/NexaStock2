@@ -4,6 +4,11 @@ import { fetchServerState, pullRemoteChanges, flushPendingChanges, enqueueChange
 import { TABLE_TO_CLIENT_FIELD, EMBEDDED_CHILDREN } from '../shared/syncMappings';
 import { LOCAL_CACHE_KEY } from '../constants';
 import { setItem as dexieSet, getItem as dexieGet, removeItem as dexieRemove } from '../lib/storage';
+import {
+  subscribeToFirestoreChanges,
+  saveGlobalSaaSSettingsToFirestore,
+  savePricingPlansToFirestore
+} from '../lib/firebaseSync';
 
 interface DBContextValue {
   db: DBState;
@@ -155,9 +160,15 @@ export function DBProvider({ children }: { children: ReactNode }) {
     }
     await flushPendingChanges();
     const pullResult = await pullRemoteChanges();
-    if (pullResult && (Object.keys(pullResult.changes).length > 0 || Object.keys(pullResult.deletions).length > 0)) {
+    if (pullResult) {
       setDb(prev => {
-        const merged = deepMergeDbState(prev, pullResult.changes, pullResult.deletions);
+        let merged = deepMergeDbState(prev, pullResult.changes, pullResult.deletions);
+        if (pullResult.globalSaaSSettings) {
+          merged = { ...merged, globalSaaSSettings: pullResult.globalSaaSSettings };
+        }
+        if (pullResult.saasCurrency) {
+          merged = { ...merged, saasCurrency: pullResult.saasCurrency };
+        }
         persistCache(merged);
         return merged;
       });
@@ -174,11 +185,23 @@ export function DBProvider({ children }: { children: ReactNode }) {
         enqueueChange(change);
       }
 
+      // Synchronisation directe et instantanée vers Firestore pour les forfaits et coordonnées
       if (isOnline) {
+        if (nextDb.globalSaaSSettings && JSON.stringify(nextDb.globalSaaSSettings) !== JSON.stringify(prevDb.globalSaaSSettings)) {
+          saveGlobalSaaSSettingsToFirestore(nextDb.globalSaaSSettings, nextDb.saasCurrency).catch(err => {
+            console.error('[SYNC] Échec sauvegarde directe paramètres SaaS:', err);
+          });
+        }
+        if (nextDb.pricingPlans && JSON.stringify(nextDb.pricingPlans) !== JSON.stringify(prevDb.pricingPlans)) {
+          savePricingPlansToFirestore(nextDb.pricingPlans).catch(err => {
+            console.error('[SYNC] Échec sauvegarde directe grille forfaits:', err);
+          });
+        }
+
         if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
         flushTimerRef.current = setTimeout(() => {
           flushNow();
-        }, 2000);
+        }, 400);
       }
 
       setDb(nextDb);
@@ -191,6 +214,20 @@ export function DBProvider({ children }: { children: ReactNode }) {
       setIsSyncing(false);
     }
   }, [persistCache, isOnline, flushNow]);
+
+  // Écouteur Firestore temps réel sur toutes les entités
+  useEffect(() => {
+    const unsub = subscribeToFirestoreChanges((incoming) => {
+      setDb(prev => {
+        const next = { ...prev, ...incoming };
+        persistCache(next);
+        return next;
+      });
+    });
+    return () => {
+      unsub();
+    };
+  }, [persistCache]);
 
   useEffect(() => {
     (async () => {

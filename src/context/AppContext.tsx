@@ -46,13 +46,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
   const activeUser = useMemo(() => db.users.find(u => u.id === activeUserId), [db.users, activeUserId]);
 
+  // Règle stricte d'isolation : un utilisateur standard est strictement lié à son entreprise unique
+  useEffect(() => {
+    if (activeUser && activeUser.role !== 'superadmin' && activeUser.tenantId) {
+      if (activeTenantId !== activeUser.tenantId) {
+        setActiveTenantId(activeUser.tenantId);
+      }
+    }
+  }, [activeUser, activeTenantId]);
+
   const handleSwitchTenant = useCallback((tenantId: string) => {
-    setActiveTenantId(tenantId);
     const currentUser = db.users.find(u => u.id === activeUserId);
     if (currentUser?.role !== 'superadmin') {
-      const tenantUser = db.users.find(u => u.tenantId === tenantId);
-      if (tenantUser) setActiveUserId(tenantUser.id);
+      addNotification("Accès refusé : votre compte est strictement lié à une seule entreprise.", 'error');
+      return;
     }
+    setActiveTenantId(tenantId);
     const tenantName = db.tenants.find(t => t.id === tenantId)?.name || 'Tenant';
     addNotification(createTenantSwitchMessage(tenantName));
   }, [db, activeUserId, addNotification]);
@@ -60,7 +69,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const handleSwitchUser = useCallback((userId: string) => {
     setActiveUserId(userId);
     const user = db.users.find(u => u.id === userId);
-    if (user) addNotification(createUserSwitchMessage(user.name, user.role));
+    if (user) {
+      // Si l'utilisateur basculé n'est pas superadmin, le rattacher directement à son entreprise
+      if (user.role !== 'superadmin' && user.tenantId) {
+        setActiveTenantId(user.tenantId);
+      }
+      addNotification(createUserSwitchMessage(user.name, user.role));
+    }
   }, [db, addNotification]);
 
   const handleUpdateTenantPlan = useCallback((tenantId: string, plan: SubscriptionPlan) => {
@@ -72,10 +87,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const handleLoginSuccess = useCallback((userId: string, tenantId?: string | null) => {
     resetModuleCache();
     setActiveUserId(userId);
-    setActiveTenantId(tenantId || db.tenants[0]?.id || '');
+    const user = db.users.find(u => u.id === userId);
+    // Un utilisateur non-superadmin est verrouillé sur son entreprise dédiée
+    const boundTenantId = (user && user.role !== 'superadmin' && user.tenantId)
+      ? user.tenantId
+      : (tenantId || user?.tenantId || db.tenants[0]?.id || '');
+    setActiveTenantId(boundTenantId);
     setIsLoggedIn(true);
     addNotification('Connexion réussie');
-  }, [db.tenants, addNotification]);
+  }, [db.users, db.tenants, addNotification]);
 
   const handleRegisterTenant = useCallback((newTenant: Tenant, newUser: User) => {
     setActiveTenantId(newTenant.id);

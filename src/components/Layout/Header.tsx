@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useDB, useApp } from '../../context';
-import { Cloud, CloudOff, RefreshCw, User as UserIcon, LogOut, ChevronDown, Check, Shield } from 'lucide-react';
+import { Cloud, CloudOff, RefreshCw, User as UserIcon, LogOut, ChevronDown, Check, Shield, Building2 } from 'lucide-react';
 import UserProfileModal from '../UserProfileModal';
 
 export function Header() {
@@ -9,6 +9,8 @@ export function Header() {
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [tenantDropdownOpen, setTenantDropdownOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+
+  const isSuperAdmin = activeUser?.role === 'superadmin';
 
   const handleManualSync = async () => {
     try {
@@ -39,34 +41,49 @@ export function Header() {
     <>
       <header className="hidden lg:flex h-16 border-b border-gray-800 px-6 items-center justify-between bg-gray-900 sticky top-0 z-30">
         <div className="flex items-center gap-4">
-          {/* Boutique active */}
+          {/* Boutique active : Seul le super-admin peut basculer d'entreprise */}
           <div className="relative">
-            <button
-              onClick={() => setTenantDropdownOpen(!tenantDropdownOpen)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-950 border border-gray-800 hover:border-gray-700 text-left text-xs transition"
-            >
-              <span className="font-bold text-white uppercase">{activeTenant?.name || 'Organisation'}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-            </button>
+            {isSuperAdmin ? (
+              <>
+                <button
+                  onClick={() => setTenantDropdownOpen(!tenantDropdownOpen)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-950 border border-gray-800 hover:border-gray-700 text-left text-xs transition"
+                  title="Super-admin : basculer vers un locataire"
+                >
+                  <Building2 className="w-3.5 h-3.5 text-red-400" />
+                  <span className="font-bold text-white uppercase">{activeTenant?.name || 'Organisation'}</span>
+                  <span className="text-[9px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded font-mono font-bold">SUPERADMIN</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                </button>
 
-            {tenantDropdownOpen && (
-              <div className="absolute left-0 mt-2 w-64 bg-gray-900 border border-gray-800 rounded-xl shadow-xl p-2 z-50">
-                <div className="px-3 py-1 text-[10px] font-mono text-gray-400 uppercase">Changer de boutique</div>
-                {db.tenants.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => {
-                      handleSwitchTenant(t.id);
-                      setTenantDropdownOpen(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-left ${
-                      t.id === activeTenantId ? 'bg-blue-600/20 text-blue-300 font-bold' : 'text-gray-300 hover:bg-gray-800'
-                    }`}
-                  >
-                    <span>{t.name}</span>
-                    {t.id === activeTenantId && <Check className="w-3.5 h-3.5 text-blue-400" />}
-                  </button>
-                ))}
+                {tenantDropdownOpen && (
+                  <div className="absolute left-0 mt-2 w-64 bg-gray-900 border border-gray-800 rounded-xl shadow-xl p-2 z-50">
+                    <div className="px-3 py-1 text-[10px] font-mono text-gray-400 uppercase">Superadmin - Changer de boutique</div>
+                    {db.tenants.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          handleSwitchTenant(t.id);
+                          setTenantDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs text-left ${
+                          t.id === activeTenantId ? 'bg-blue-600/20 text-blue-300 font-bold' : 'text-gray-300 hover:bg-gray-800'
+                        }`}
+                      >
+                        <span>{t.name}</span>
+                        {t.id === activeTenantId && <Check className="w-3.5 h-3.5 text-blue-400" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-950 border border-gray-800 text-left text-xs">
+                <Building2 className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                <div className="flex flex-col">
+                  <span className="font-bold text-white uppercase leading-tight">{activeTenant?.name || 'Mon Entreprise'}</span>
+                  <span className="text-[9px] font-mono text-gray-400 leading-tight">Entreprise liée (Compte unique)</span>
+                </div>
               </div>
             )}
           </div>

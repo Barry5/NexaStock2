@@ -244,7 +244,8 @@ export default function SuperAdminModuleManager({
       const nextPlanModules: PlanModule[] = [];
       for (const [planId, moduleKeys] of Object.entries(localPlanModules)) {
         for (const def of moduleDefinitions) {
-          const isEnabled = def.is_core || moduleKeys.includes(def.key);
+          const keys = Array.isArray(moduleKeys) ? (moduleKeys as string[]) : [];
+          const isEnabled = def.is_core || keys.includes(def.key);
           nextPlanModules.push({
             id: `pm-${planId}-${def.key}`,
             planId,

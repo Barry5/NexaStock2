@@ -25,6 +25,8 @@ export interface PullResult {
   changes: Record<string, unknown[]>;
   deletions: Record<string, string[]>;
   timestamp: string;
+  globalSaaSSettings?: any;
+  saasCurrency?: string;
 }
 
 import type { SyncOverview } from '../types/sync';
@@ -115,7 +117,9 @@ export async function pullChanges(since: string): Promise<PullResult> {
   return {
     changes,
     deletions: {},
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    globalSaaSSettings: state.globalSaaSSettings,
+    saasCurrency: state.saasCurrency,
   };
 }
 
