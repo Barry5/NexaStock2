@@ -164,7 +164,7 @@ function UserManagementInner() {
                         <tr key={u.id} className={`hover:bg-gray-950/10 transition ${isMe ? 'bg-blue-600/5' : ''}`}>
                           <td className="p-3.5">
                             <div className="flex items-center gap-2.5">
-                              {u.avatar ? <img src={u.avatar} alt={u.name} className="w-7 h-7 rounded-full object-cover border border-gray-800" /> : <div className="w-7 h-7 rounded-full bg-blue-600/15 border border-blue-500/10 text-blue-400 flex items-center justify-center font-bold font-mono uppercase text-xs">{u.name[0] || 'U'}</div>}
+                              {u.avatar?.trim() ? <img src={u.avatar} alt={u.name} className="w-7 h-7 rounded-full object-cover border border-gray-800" /> : <div className="w-7 h-7 rounded-full bg-blue-600/15 border border-blue-500/10 text-blue-400 flex items-center justify-center font-bold font-mono uppercase text-xs">{u.name[0] || 'U'}</div>}
                               <div><span className="text-white font-bold text-xs flex items-center gap-1.5">{u.name}{isMe && <span className="text-[8px] font-bold font-mono uppercase bg-blue-500/20 text-blue-400 px-1 py-0.2 rounded">Moi</span>}</span><span className="text-[10px] text-gray-500 font-mono block mt-0.5">{u.email}</span></div>
                             </div>
                           </td>

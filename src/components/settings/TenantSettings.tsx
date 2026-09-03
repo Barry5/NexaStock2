@@ -37,7 +37,13 @@ export default function TenantSettings({
               }`}
             >
               <div className="flex items-start gap-3 mb-4">
-                <img src={ten.logo} alt={ten.name} className="w-9 h-9 rounded-lg object-cover border border-gray-800 bg-gray-950 flex-shrink-0" />
+                {ten.logo ? (
+                  <img src={ten.logo} alt={ten.name} className="w-9 h-9 rounded-lg object-cover border border-gray-800 bg-gray-950 flex-shrink-0" />
+                ) : (
+                  <div className="w-9 h-9 rounded-lg border border-gray-800 bg-gray-950 flex items-center justify-center text-xs font-bold text-gray-400 flex-shrink-0 font-mono">
+                    {ten.name?.[0] || 'T'}
+                  </div>
+                )}
                 <div>
                   <p className="text-xs font-bold text-gray-200">{ten.name}</p>
                   <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{ten.description}</p>

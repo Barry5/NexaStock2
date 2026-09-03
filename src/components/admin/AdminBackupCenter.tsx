@@ -59,10 +59,11 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
   const refreshAll = useCallback(async () => {
     try {
       const [bk, qs] = await Promise.all([listManagedBackups(), coherenceQuickStatus()]);
-      setBackups(bk);
-      setQuickStatus(qs);
+      setBackups(Array.isArray(bk) ? bk : []);
+      setQuickStatus(qs || null);
       setError(null);
     } catch (e: any) {
+      setBackups(prev => (Array.isArray(prev) ? prev : []));
       setError(e.message || 'Erreur de chargement');
     } finally {
       setLoading(false);
@@ -95,7 +96,8 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
     try {
       const res = await verifyManagedBackup(b.id);
       setVerifyResults(prev => ({ ...prev, [b.id]: { ok: res.ok, message: res.message } }));
-      setBackups(await listManagedBackups());
+      const freshBk = await listManagedBackups();
+      setBackups(Array.isArray(freshBk) ? freshBk : []);
     } catch (e: any) {
       setVerifyResults(prev => ({ ...prev, [b.id]: { ok: false, message: e.message } }));
     }
@@ -106,7 +108,8 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
     setDeletingId(b.id);
     try {
       await deleteManagedBackup(b.id);
-      setBackups(await listManagedBackups());
+      const freshBk = await listManagedBackups();
+      setBackups(Array.isArray(freshBk) ? freshBk : []);
     } catch (e: any) {
       setError(e.message || 'Échec de la suppression');
     } finally {
@@ -160,7 +163,8 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
     });
   };
 
-  const coherentTables = useMemo(() => backups.filter(b => b.type === 'sqlite'), [backups]);
+  const safeBackups = useMemo(() => (Array.isArray(backups) ? backups : []), [backups]);
+  const coherentTables = useMemo(() => safeBackups.filter(b => b?.type === 'sqlite'), [safeBackups]);
 
   return (
     <motion.div key="backup-center" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} className="space-y-6">
@@ -222,8 +226,8 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs uppercase tracking-wider text-gray-400">État de cohérence</p>
-              <p className={`mt-2 text-2xl font-black ${quickStatus ? (quickStatus.incoherent > 0 ? 'text-red-400' : quickStatus.pending > 0 ? 'text-amber-400' : 'text-emerald-400') : 'text-gray-500'}`}>
-                {quickStatus ? (quickStatus.incoherent > 0 ? 'Incohérent' : quickStatus.pending > 0 ? 'Sync en attente' : 'Cohérent') : '—'}
+              <p className={`mt-2 text-2xl font-black ${quickStatus ? ((quickStatus.incoherent ?? 0) > 0 ? 'text-red-400' : (quickStatus.pending ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400') : 'text-gray-500'}`}>
+                {quickStatus ? ((quickStatus.incoherent ?? 0) > 0 ? 'Incohérent' : (quickStatus.pending ?? 0) > 0 ? 'Sync en attente' : 'Cohérent') : '—'}
               </p>
             </div>
             <Activity className="h-6 w-6 text-violet-400" />
@@ -321,7 +325,7 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
                 Généré le {fmtDate(coherence.generatedAt)} · {coherence.durationMs} ms · mode {coherence.deep ? 'complet' : 'rapide'} · {coherence.supabaseReachable ? 'Supabase joignable' : 'Supabase injoignable'}
               </p>
             </div>
-            <div className={`text-sm font-black uppercase ${statusMeta[coherence.overall].cls}`}>
+            <div className={`text-sm font-black uppercase ${statusMeta[coherence.overall]?.cls || 'text-gray-400'}`}>
               {coherence.overall === 'ok' && '✅ Cohérent'}
               {coherence.overall === 'pending' && '⚠️ Synchronisation en attente'}
               {coherence.overall === 'incoherent' && '❌ Incohérences détectées'}
@@ -332,10 +336,10 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
           {/* SUMMARY BAR */}
           <div className="mt-4 grid grid-cols-4 gap-2 text-center">
             {[
-              { n: coherence.summary.ok, label: 'Cohérents', cls: 'bg-emerald-950/40 text-emerald-400' },
-              { n: coherence.summary.pending, label: 'En attente', cls: 'bg-amber-950/40 text-amber-400' },
-              { n: coherence.summary.incoherent, label: 'Incohérents', cls: 'bg-red-950/40 text-red-400' },
-              { n: coherence.summary.unknown, label: 'Injoignables', cls: 'bg-gray-900 text-gray-400' },
+              { n: coherence.summary?.ok ?? 0, label: 'Cohérents', cls: 'bg-emerald-950/40 text-emerald-400' },
+              { n: coherence.summary?.pending ?? 0, label: 'En attente', cls: 'bg-amber-950/40 text-amber-400' },
+              { n: coherence.summary?.incoherent ?? 0, label: 'Incohérents', cls: 'bg-red-950/40 text-red-400' },
+              { n: coherence.summary?.unknown ?? 0, label: 'Injoignables', cls: 'bg-gray-900 text-gray-400' },
             ].map(s => (
               <div key={s.label} className={`rounded-2xl p-3 ${s.cls}`}>
                 <p className="text-2xl font-black">{s.n}</p>
@@ -344,9 +348,9 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
             ))}
           </div>
 
-          {coherence.pendingTotal.changelog + coherence.pendingTotal.deletions > 0 && (
+          {((coherence.pendingTotal?.changelog ?? 0) + (coherence.pendingTotal?.deletions ?? 0)) > 0 && (
             <p className="mt-3 text-xs text-amber-300 bg-amber-950/30 border border-amber-700/30 rounded-xl p-3">
-              {coherence.pendingTotal.changelog} changement(s) et {coherence.pendingTotal.deletions} suppression(s) en attente de poussée vers Supabase. Déclenchez la synchronisation (Console → Sync) puis relancez le contrôle.
+              {coherence.pendingTotal?.changelog ?? 0} changement(s) et {coherence.pendingTotal?.deletions ?? 0} suppression(s) en attente de poussée vers Supabase. Déclenchez la synchronisation (Console → Sync) puis relancez le contrôle.
             </p>
           )}
 
@@ -367,10 +371,10 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-850">
-                {coherence.tables.map(t => {
-                  const meta = statusMeta[t.status];
+                {(coherence.tables || []).map(t => {
+                  const meta = statusMeta[t.status] || { icon: null, label: t.status, cls: 'text-gray-400' };
                   const expanded = expandedTables.has(t.table);
-                  const pending = t.pendingCreates + t.pendingUpdates + t.pendingDeletes;
+                  const pending = (t.pendingCreates ?? 0) + (t.pendingUpdates ?? 0) + (t.pendingDeletes ?? 0);
                   return (
                     <React.Fragment key={t.table}>
                       <tr className="hover:bg-gray-900/30 transition cursor-pointer" onClick={() => toggleTable(t.table)}>
@@ -445,7 +449,7 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
       <div className="rounded-3xl border border-gray-850 bg-gray-950 p-5 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-wider text-gray-400">Sauvegardes gérées ({backups.length})</p>
+            <p className="text-xs uppercase tracking-wider text-gray-400">Sauvegardes gérées ({safeBackups.length})</p>
             <p className="mt-1 text-xs text-gray-500">Checksum SHA-256 vérifié avant toute restauration. Les 10 dernières sauvegardes par type sont conservées.</p>
           </div>
           <History className="h-5 w-5 text-slate-400" />
@@ -454,7 +458,7 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
           <div className="py-10 text-center text-sm text-gray-500 flex items-center justify-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" /> Chargement…
           </div>
-        ) : backups.length === 0 ? (
+        ) : safeBackups.length === 0 ? (
           <div className="py-10 text-center text-sm text-gray-500">
             Aucune sauvegarde gérée. Cliquez sur « Sauvegarder SQLite » ou « Sauvegarder Supabase » pour créer la première.
           </div>
@@ -474,7 +478,7 @@ export default function AdminBackupCenter({ }: AdminBackupCenterProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-850 font-mono">
-                {backups.map(b => {
+                {safeBackups.map(b => {
                   const v = verifyResults[b.id];
                   return (
                     <tr key={b.id} className="hover:bg-gray-900/30 transition">

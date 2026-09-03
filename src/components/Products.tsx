@@ -4,7 +4,6 @@ import { Package, MapPin, ArrowLeftRight, Layers } from 'lucide-react';
 import type { Product, Warehouse, StockTransfer, ProductVariant } from '../types';
 import { useDB, useApp } from '../context';
 import { getTenantPlanStatus } from '../lib/subscriptionUtils.js';
-import { IMAGE_PRESETS } from './products/ProductFormModal';
 import { productSchema } from '../lib/validation';
 import ProductsCatalog from './products/ProductsCatalog';
 import ProductsWarehouses from './products/ProductsWarehouses';
@@ -136,7 +135,7 @@ export default function Products() {
     sellPrice: 0,
     quantity: 0,
     alertThreshold: 5,
-    image: IMAGE_PRESETS[0].url
+    image: ''
   });
 
   const handleOpenCreate = () => {
@@ -157,7 +156,7 @@ export default function Products() {
       sellPrice: 0,
       quantity: 10,
       alertThreshold: 5,
-      image: IMAGE_PRESETS[0].url
+      image: ''
     });
     setIsModalOpen(true);
   };
@@ -175,7 +174,7 @@ export default function Products() {
       sellPrice: prod.sellPrice,
       quantity: prod.quantity,
       alertThreshold: prod.alertThreshold,
-      image: prod.image || IMAGE_PRESETS[0].url
+      image: prod.image || ''
     });
     setIsModalOpen(true);
   };

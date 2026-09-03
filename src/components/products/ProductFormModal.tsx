@@ -3,16 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle } from 'lucide-react';
 import type { Product } from '../../types';
 
-const IMAGE_PRESETS = [
-  { label: 'Smartphone', url: 'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=200&h=200&fit=crop&q=80' },
-  { label: 'Laptop', url: 'https://images.unsplash.com/photo-1496181130204-755241544e35?w=200&h=200&fit=crop&q=80' },
-  { label: 'Casque', url: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=200&h=200&fit=crop&q=80' },
-  { label: 'Écouteurs', url: 'https://images.unsplash.com/photo-1588449668338-d1516824347d?w=200&h=200&fit=crop&q=80' },
-  { label: 'Boîte Médicament', url: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=200&h=200&fit=crop&q=80' },
-  { label: 'Crème Cosmetique', url: 'https://images.unsplash.com/photo-1608248597481-496100c8c836?w=200&h=200&fit=crop&q=80' },
-  { label: 'Bouteille Jus', url: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=200&h=200&fit=crop&q=80' },
-  { label: 'Snack / Chocolat', url: 'https://images.unsplash.com/photo-1511381939415-e44015466834?w=200&h=200&fit=crop&q=80' }
-];
+const IMAGE_PRESETS: { label: string; url: string }[] = [];
 
 export { IMAGE_PRESETS };
 
@@ -149,27 +140,25 @@ export default function ProductFormModal({
 
               <div className="space-y-2">
                 <label className="text-[10px] font-mono font-bold text-gray-400 uppercase block">Photo du Produit</label>
-                {formData.image && (
-                  <div className="w-20 h-20 rounded-xl overflow-hidden border border-gray-800">
-                    <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
+                {Boolean(formData.image?.trim()) ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-16 h-16 rounded-xl overflow-hidden border border-gray-800 bg-gray-950 flex-shrink-0">
+                      <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => updateField('image', '')}
+                      className="px-2.5 py-1 text-[10px] text-red-400 hover:text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg transition font-mono"
+                    >
+                      Supprimer l'image
+                    </button>
                   </div>
-                )}
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   <input type="file" accept="image/*" onChange={handleImageFile}
                     className="text-[10px] text-gray-400 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:bg-gray-800 file:text-gray-300 hover:file:bg-gray-700" />
                   <input type="text" value={formData.image} onChange={(e) => updateField('image', e.target.value)}
                     placeholder="Ou collez une URL d'image..." className="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 text-[10px] text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
-                </div>
-                <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-                  {IMAGE_PRESETS.map(p => (
-                    <button key={p.label} type="button" onClick={() => updateField('image', p.url)}
-                      className="relative group overflow-hidden rounded-lg border border-gray-800 hover:border-blue-500 transition">
-                      <img src={p.url} alt={p.label} className="w-full h-10 object-cover" />
-                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center">
-                        <span className="text-[7px] text-white opacity-0 group-hover:opacity-100 font-bold">{p.label}</span>
-                      </div>
-                    </button>
-                  ))}
                 </div>
               </div>
 

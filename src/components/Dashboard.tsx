@@ -168,7 +168,7 @@ function DashboardInner() {
         <td style="padding:10px;text-align:right;font-weight:bold;font-family:monospace;color:#1a202c;">${sale.total.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} ${activeTenant?.currency || 'EUR'}</td>
       </tr>`;
     }).join('');
-    const logoHtml = activeTenant?.logo
+    const logoHtml = activeTenant?.logo?.trim()
       ? `<img src="${activeTenant.logo}" alt="Logo" style="height:50px;object-fit:contain;margin-bottom:10px;border-radius:6px;" />`
       : `<div style="font-size:20px;font-weight:bold;color:#ef4444;border:2px solid #ef4444;padding:4px 10px;display:inline-block;border-radius:4px;font-family:sans-serif;">${activeTenant?.name?.[0] || 'N'}</div>`;
     const currentDateStr = new Date().toLocaleString('fr-FR');
@@ -208,7 +208,7 @@ function DashboardInner() {
     const itemsRows = sale.items.map((it: any) =>
       `<tr style="border-bottom:1px dashed #e2e8f0;font-size:11px;"><td style="padding:6px 0;">${it.productName}</td><td style="padding:6px 0;text-align:center;">${it.quantity}</td><td style="padding:6px 0;text-align:right;">${it.price.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td><td style="padding:6px 0;text-align:right;font-weight:bold;">${it.total.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td></tr>`
     ).join('');
-    const logoHtml = activeTenant?.logo
+    const logoHtml = activeTenant?.logo?.trim()
       ? `<img src="${activeTenant.logo}" alt="Logo" style="height:45px;object-fit:contain;margin-bottom:8px;" />`
       : `<div style="font-size:18px;font-weight:bold;color:#ef4444;border:2px solid #ef4444;padding:2px 8px;display:inline-block;margin-bottom:5px;">${activeTenant?.name?.[0] || 'N'}</div>`;
     printWindow.document.write(`<!DOCTYPE html><html><head><title>Facture ${sale.invoiceNumber}</title><style>
@@ -404,7 +404,7 @@ function DashboardInner() {
             {lowStockItems.length > 0 ? lowStockItems.map(item => (
               <div key={item.id} className="flex items-center justify-between p-3 rounded-xl bg-gray-950/80 border border-gray-800 hover:border-amber-500/20 transition">
                 <div className="flex items-center gap-3">
-                  {item.image ? <img src={item.image} alt={item.name} className="w-9 h-9 rounded-lg object-cover" /> : <div className="w-9 h-9 bg-gray-800 rounded-lg flex items-center justify-center font-bold text-gray-500">{item.name[0]}</div>}
+                  {item.image?.trim() ? <img src={item.image} alt={item.name} className="w-9 h-9 rounded-lg object-cover" /> : <div className="w-9 h-9 bg-gray-800 rounded-lg flex items-center justify-center font-bold text-gray-500">{item.name[0]}</div>}
                   <div><h4 className="text-xs font-semibold text-gray-200">{item.name}</h4><p className="text-[10px] text-gray-500 font-mono mt-0.5">SKU: {item.sku} | Cat: {item.category}</p></div>
                 </div>
                 <div className="text-right"><span className="text-xs font-mono font-semibold text-amber-500 block">{item.quantity} restants</span><span className="text-[10px] text-gray-500 font-mono">Seuil: {item.alertThreshold}</span></div>

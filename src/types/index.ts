@@ -466,6 +466,7 @@ export interface GlobalSaaSSettings {
   bankDetails?: string;
   paymentInstructions?: string;
   automaticActivation?: boolean;
+  saasCurrency?: string;
 }
 
 export interface DBState {

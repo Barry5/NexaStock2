@@ -35,6 +35,7 @@ import AdminSupport from './admin/AdminSupport';
 import AdminLogs from './admin/AdminLogs';
 import AdminSyncOverview from './admin/AdminSyncOverview';
 import { fetchSyncOverview } from '../api/sync';
+import { saveGlobalSaaSSettingsToFirestore, savePricingPlansToFirestore } from '../lib/firebaseSync';
 
 function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = localStorage.getItem('nexastock_token');
@@ -136,7 +137,7 @@ export default function SaaSAdmin() {
     if (localGlobalSaaSSettings === null || enteredPlansTab) {
       setLocalGlobalSaaSSettings(globalSaaSSettings);
       setLocalPricingPlans(JSON.parse(JSON.stringify(pricingPlans)));
-      setLocalSaasCurrency(db.saasCurrency || 'EUR');
+      setLocalSaasCurrency(db.saasCurrency || globalSaaSSettings?.saasCurrency || 'EUR');
     }
     prevActiveSubTabRef.current = activeSubTab;
   }, [activeSubTab, pricingPlans, globalSaaSSettings, db.saasCurrency, localGlobalSaaSSettings]);
@@ -427,27 +428,48 @@ export default function SaaSAdmin() {
   };
 
   // Save all settings globally in one go to prevent race conditions
-  const handleSaveAllSaaSSettings = () => {
+  const handleSaveAllSaaSSettings = async () => {
     setIsSaaSSettingsSaving(true);
-    setTimeout(() => {
+    try {
+      const nextGlobalSettings = {
+        ...(localGlobalSaaSSettings || globalSaaSSettings || {}),
+        saasCurrency: localSaasCurrency
+      };
+      const nextPlans = (localPricingPlans && localPricingPlans.length > 0 ? localPricingPlans : pricingPlans).map((p: any) => ({
+        ...p,
+        currency: localSaasCurrency
+      }));
       // Propagate the global currency to all existing tenant organizations
-      const updatedTenants = db.tenants.map(t => ({
+      const updatedTenants = (db.tenants || []).map(t => ({
         ...t,
         currency: localSaasCurrency
       }));
 
+      // Immediate direct Firestore write so cloud state persists instantly
+      await saveGlobalSaaSSettingsToFirestore(nextGlobalSettings, localSaasCurrency).catch(err => {
+        console.warn('Direct Firestore save failed, will sync via queue:', err);
+      });
+      await savePricingPlansToFirestore(nextPlans).catch(err => {
+        console.warn('Direct pricing plans Firestore save failed:', err);
+      });
+
       handleUpdateDb({
         ...db,
         saasCurrency: localSaasCurrency,
-        pricingPlans: localPricingPlans,
-        globalSaaSSettings: localGlobalSaaSSettings,
+        pricingPlans: nextPlans,
+        globalSaaSSettings: nextGlobalSettings,
         tenants: updatedTenants
       });
+
       setIsSaaSSettingsSaving(false);
       setIsSaaSSettingsSaved(true);
-      addNotification(`Configuration globale du SaaS enregistrée (${localSaasCurrency}) !`);
+      addNotification(`Configuration globale du SaaS et devise (${localSaasCurrency}) enregistrées avec succès !`);
       setTimeout(() => setIsSaaSSettingsSaved(false), 4000);
-    }, 600);
+    } catch (err: any) {
+      console.error('Error saving SaaS settings:', err);
+      setIsSaaSSettingsSaving(false);
+      addNotification('Erreur lors de la sauvegarde des paramètres SaaS.');
+    }
   };
 
   // Delete user from system

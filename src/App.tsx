@@ -15,21 +15,22 @@ import { formatCurrency } from './utils';
 import { useAvailableModules, resetModuleCache } from './hooks/useModules';
 import { Header } from './components/Layout/Header';
 import UserProfileModal from './components/UserProfileModal';
+import SaaSAuth from './components/SaaSAuth';
+import { lazyWithRetry } from './utils/lazyWithRetry';
 
-const LazyDashboard = lazy(() => import('./components/Dashboard'));
-const LazyProducts = lazy(() => import('./components/Products'));
-const LazyPOS = lazy(() => import('./components/POS'));
-const LazyCustomers = lazy(() => import('./components/Customers'));
-const LazyExpenses = lazy(() => import('./components/Expenses'));
-const LazyAIRestock = lazy(() => import('./components/AIRestock'));
-const LazySaaSSettings = lazy(() => import('./components/SaaSSettings'));
-const LazySaaSAuth = lazy(() => import('./components/SaaSAuth'));
-const LazySaaSAdmin = lazy(() => import('./components/SaaSAdmin'));
-const LazyUserManagement = lazy(() => import('./components/UserManagement'));
-const LazyInvoicing = lazy(() => import('./components/Invoicing'));
-const LazyCommissions = lazy(() => import('./components/Commissions'));
-const LazyDeliveryNotes = lazy(() => import('./components/DeliveryNotes'));
-const LazyRBACManager = lazy(() => import('./components/RBACManager'));
+const LazyDashboard = lazyWithRetry(() => import('./components/Dashboard'), 'Dashboard');
+const LazyProducts = lazyWithRetry(() => import('./components/Products'), 'Products');
+const LazyPOS = lazyWithRetry(() => import('./components/POS'), 'POS');
+const LazyCustomers = lazyWithRetry(() => import('./components/Customers'), 'Customers');
+const LazyExpenses = lazyWithRetry(() => import('./components/Expenses'), 'Expenses');
+const LazyAIRestock = lazyWithRetry(() => import('./components/AIRestock'), 'AIRestock');
+const LazySaaSSettings = lazyWithRetry(() => import('./components/SaaSSettings'), 'SaaSSettings');
+const LazySaaSAdmin = lazyWithRetry(() => import('./components/SaaSAdmin'), 'SaaSAdmin');
+const LazyUserManagement = lazyWithRetry(() => import('./components/UserManagement'), 'UserManagement');
+const LazyInvoicing = lazyWithRetry(() => import('./components/Invoicing'), 'Invoicing');
+const LazyCommissions = lazyWithRetry(() => import('./components/Commissions'), 'Commissions');
+const LazyDeliveryNotes = lazyWithRetry(() => import('./components/DeliveryNotes'), 'DeliveryNotes');
+const LazyRBACManager = lazyWithRetry(() => import('./components/RBACManager'), 'RBACManager');
 
 function AppShell() {
   const {
@@ -200,7 +201,7 @@ function AppShell() {
   }, [sidebarMenuItems, currentTab, isLoggedIn, setCurrentTab]);
 
   if (!isLoggedIn) {
-    return <LazySaaSAuth />;
+    return <SaaSAuth />;
   }
 
   return (

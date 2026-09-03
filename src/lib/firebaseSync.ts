@@ -65,14 +65,16 @@ export interface FirestoreSyncResult {
  * Sauvegarde directe des coordonnées de règlement & devises SaaS vers Firestore
  */
 export async function saveGlobalSaaSSettingsToFirestore(
-  settings: GlobalSaaSSettings,
+  settings: Partial<GlobalSaaSSettings>,
   saasCurrency?: string
 ): Promise<void> {
   const start = Date.now();
   try {
+    const effectiveCurrency = saasCurrency || settings.saasCurrency || (settings as any).currency || 'EUR';
     const payload = {
       ...settings,
-      saasCurrency: saasCurrency || (settings as any).saasCurrency || 'EUR',
+      saasCurrency: effectiveCurrency,
+      currency: effectiveCurrency,
       updatedAt: new Date().toISOString()
     };
     await setDoc(doc(db, 'system', 'globalSaaSSettings'), payload, { merge: true });
@@ -189,15 +191,16 @@ export async function loadStateFromFirestore(tenantId?: string | null): Promise<
     // 1. Charger les settings globaux
     const settingsDoc = await getDoc(doc(db, 'system', 'globalSaaSSettings'));
     if (settingsDoc.exists()) {
-      const sData = settingsDoc.data() as GlobalSaaSSettings & { saasCurrency?: string };
+      const sData = settingsDoc.data() as GlobalSaaSSettings & { saasCurrency?: string; currency?: string };
       result.globalSaaSSettings = sData;
-      result.saasCurrency = sData.saasCurrency || 'EUR';
+      result.saasCurrency = sData.saasCurrency || sData.currency || DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR';
     } else {
       result.globalSaaSSettings = DEFAULT_SAAS_SETTINGS;
-      result.saasCurrency = 'EUR';
+      result.saasCurrency = DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR';
       await setDoc(doc(db, 'system', 'globalSaaSSettings'), {
         ...DEFAULT_SAAS_SETTINGS,
-        saasCurrency: 'EUR',
+        saasCurrency: DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR',
+        currency: DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR',
         updatedAt: new Date().toISOString()
       }).catch(console.warn);
     }
@@ -454,10 +457,11 @@ export function subscribeToFirestoreChanges(
     const settingsDocRef = doc(db, 'system', 'globalSaaSSettings');
     const unsubSettings = onSnapshot(settingsDocRef, (snap) => {
       if (snap.exists()) {
-        const data = snap.data() as GlobalSaaSSettings & { saasCurrency?: string };
+        const data = snap.data() as GlobalSaaSSettings & { saasCurrency?: string; currency?: string };
+        const detectedCurrency = data.saasCurrency || data.currency;
         onUpdate({
           globalSaaSSettings: data,
-          saasCurrency: data.saasCurrency || 'EUR'
+          ...(detectedCurrency ? { saasCurrency: detectedCurrency } : {})
         });
       }
     }, (err) => {

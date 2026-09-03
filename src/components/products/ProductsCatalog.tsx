@@ -162,7 +162,7 @@ export default function ProductsCatalog({
                 ) : null}
 
                 <div className="h-44 bg-gray-950 relative overflow-hidden flex items-center justify-center border-b border-gray-850">
-                  {prod.image ? (
+                  {prod.image?.trim() ? (
                     <img
                       src={prod.image}
                       alt={prod.name}

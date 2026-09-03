@@ -187,8 +187,18 @@ export function DBProvider({ children }: { children: ReactNode }) {
 
       // Synchronisation directe et instantanée vers Firestore pour les forfaits et coordonnées
       if (isOnline) {
-        if (nextDb.globalSaaSSettings && JSON.stringify(nextDb.globalSaaSSettings) !== JSON.stringify(prevDb.globalSaaSSettings)) {
-          saveGlobalSaaSSettingsToFirestore(nextDb.globalSaaSSettings, nextDb.saasCurrency).catch(err => {
+        const currencyChanged = Boolean(nextDb.saasCurrency && nextDb.saasCurrency !== prevDb.saasCurrency);
+        const settingsChanged = Boolean(
+          (nextDb.globalSaaSSettings && JSON.stringify(nextDb.globalSaaSSettings) !== JSON.stringify(prevDb.globalSaaSSettings)) ||
+          currencyChanged
+        );
+
+        if (settingsChanged) {
+          const effectiveCurrency = nextDb.saasCurrency || nextDb.globalSaaSSettings?.saasCurrency || 'EUR';
+          saveGlobalSaaSSettingsToFirestore({
+            ...(nextDb.globalSaaSSettings || {}),
+            saasCurrency: effectiveCurrency
+          }, effectiveCurrency).catch(err => {
             console.error('[SYNC] Échec sauvegarde directe paramètres SaaS:', err);
           });
         }

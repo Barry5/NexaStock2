@@ -23,7 +23,8 @@ import {
   ArrowRight,
   Eye,
   Sliders,
-  X
+  X,
+  Save
 } from 'lucide-react';
 import type { PricingPlan } from '../../types';
 
@@ -715,6 +716,7 @@ export default function AdminPlans({
                 onChange={(e) => {
                   const newCurrency = e.target.value;
                   setLocalSaasCurrency(newCurrency);
+                  handleSaveGlobalPaymentsSettings('saasCurrency', newCurrency);
                   setLocalPricingPlans((prev: any[]) => prev.map((p: any) => ({
                     ...p,
                     currency: newCurrency
@@ -760,6 +762,37 @@ export default function AdminPlans({
                 <option value="ReadOnly">Mode lecture seule strict</option>
               </select>
             </div>
+          </div>
+
+          {/* Action bar for Coordonnées & Devise */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-5 border-t border-gray-850">
+            <div className="text-xs text-gray-400">
+              <span className="text-white font-bold">Devise active : {currentCurrency}</span> • Les forfaits, abonnements et statistiques financières utiliseront cette devise principale.
+            </div>
+            <button
+              type="button"
+              onClick={handleSaveAllSaaSSettings}
+              disabled={isSaaSSettingsSaving}
+              className={`w-full sm:w-auto px-6 py-2.5 rounded-xl font-bold text-xs transition flex items-center justify-center gap-2 shadow-lg ${
+                isSaaSSettingsSaved 
+                  ? 'bg-emerald-600 text-white shadow-emerald-500/20' 
+                  : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'
+              }`}
+            >
+              {isSaaSSettingsSaving ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" /> Enregistrement...
+                </>
+              ) : isSaaSSettingsSaved ? (
+                <>
+                  <Check className="w-4 h-4" /> Enregistré dans le Cloud !
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" /> Enregistrer les Coordonnées & Devise
+                </>
+              )}
+            </button>
           </div>
         </div>
       )}

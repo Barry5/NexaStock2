@@ -90,7 +90,7 @@ export default function AdminUsers({
                 <tr key={u.id} className={`hover:bg-gray-950/20 transition ${isCurrentUser ? 'bg-emerald-950/5' : ''}`}>
                   <td className="p-3">
                     <div className="flex items-center gap-2">
-                      {u.avatar ? (
+                      {u.avatar?.trim() ? (
                         <img src={u.avatar} alt={u.name} className="w-6 h-6 rounded-full object-cover border border-gray-800" />
                       ) : (
                         <div className="w-6 h-6 rounded-full bg-blue-600/20 text-blue-400 text-[10px] font-bold flex items-center justify-center uppercase font-mono">{u.name[0]}</div>

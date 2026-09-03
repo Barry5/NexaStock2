@@ -77,7 +77,7 @@ export default function TeamSettings({
               {tenantUsers.map(u => (
                 <tr key={u.id} className="hover:bg-gray-950/10 transition">
                   <td className="p-3.5 flex items-center gap-2.5">
-                    {u.avatar ? (
+                    {u.avatar?.trim() ? (
                       <img src={u.avatar} alt={u.name} className="w-7 h-7 rounded-full object-cover border border-gray-800" />
                     ) : (
                       <div className="w-7 h-7 rounded-full bg-blue-600/20 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold font-mono uppercase text-xs">

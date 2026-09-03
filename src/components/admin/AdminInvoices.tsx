@@ -83,7 +83,7 @@ export default function AdminInvoices({
                 )}
 
                 {/* Receipt Screenshot Render */}
-                {p.receiptImage && (
+                {Boolean(p.receiptImage?.trim()) ? (
                   <div className="space-y-1.5">
                     <span className="text-[10px] font-mono text-gray-500 block">Capture d'écran du transfert :</span>
                     <div className="relative group rounded-lg overflow-hidden border border-gray-800 bg-gray-900 max-h-48">
@@ -102,7 +102,7 @@ export default function AdminInvoices({
                       </div>
                     </div>
                   </div>
-                )}
+                ) : null}
 
                 {/* Admin Action Comments box */}
                 <div className="space-y-2 pt-2 border-t border-gray-900">

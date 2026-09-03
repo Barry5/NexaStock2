@@ -52,6 +52,7 @@ import TenantSettings from './settings/TenantSettings';
 import BackupSettings from './settings/BackupSettings';
 import AdminBackupCenter from './admin/AdminBackupCenter';
 import AdminPlans from './admin/AdminPlans';
+import { saveGlobalSaaSSettingsToFirestore, savePricingPlansToFirestore } from '../lib/firebaseSync';
 
 
 export default function SaaSSettings() {
@@ -265,7 +266,7 @@ export default function SaaSSettings() {
   useEffect(() => {
     setLocalGlobalSaaSSettings(globalSaaSSettings);
     setLocalPricingPlans(JSON.parse(JSON.stringify(pricingPlans)));
-    setLocalSaasCurrency(db.saasCurrency || 'EUR');
+    setLocalSaasCurrency(db.saasCurrency || globalSaaSSettings?.saasCurrency || 'EUR');
   }, [globalSaaSSettings, pricingPlans, db.saasCurrency]);
 
   const handleSavePlanSettings = (idx: number, field: string, value: any) => {
@@ -300,30 +301,49 @@ export default function SaaSSettings() {
     });
   };
 
-  const handleSaveAllSaaSSettings = () => {
+  const handleSaveAllSaaSSettings = async () => {
     setIsSaaSSettingsSaving(true);
-    setTimeout(() => {
-      const updatedTenants = db.tenants.map(t => ({
+    try {
+      const nextGlobalSettings = {
+        ...(localGlobalSaaSSettings || globalSaaSSettings || {}),
+        saasCurrency: localSaasCurrency
+      };
+      const nextPlans = (localPricingPlans && localPricingPlans.length > 0 ? localPricingPlans : pricingPlans).map((p: any) => ({
+        ...p,
+        currency: localSaasCurrency
+      }));
+      const updatedTenants = (db.tenants || []).map(t => ({
         ...t,
         currency: localSaasCurrency
       }));
 
+      await saveGlobalSaaSSettingsToFirestore(nextGlobalSettings, localSaasCurrency).catch(err => {
+        console.warn('Direct Firestore save failed, queued:', err);
+      });
+      await savePricingPlansToFirestore(nextPlans).catch(err => {
+        console.warn('Direct pricing plans Firestore save failed:', err);
+      });
+
       handleUpdateDb({
         ...db,
         saasCurrency: localSaasCurrency,
-        globalSaaSSettings: localGlobalSaaSSettings,
-        pricingPlans: localPricingPlans,
+        globalSaaSSettings: nextGlobalSettings,
+        pricingPlans: nextPlans,
         tenants: updatedTenants
       });
 
       setIsSaaSSettingsSaving(false);
       setIsSaaSSettingsSaved(true);
-      addNotification('Configuration SaaS & Grille des Forfaits sauvegardées avec succès !', 'success');
+      addNotification(`Configuration globale du SaaS et devise (${localSaasCurrency}) sauvegardées avec succès !`, 'success');
 
       setTimeout(() => {
         setIsSaaSSettingsSaved(false);
       }, 3000);
-    }, 400);
+    } catch (err: any) {
+      console.error('Error saving SaaS settings:', err);
+      setIsSaaSSettingsSaving(false);
+      addNotification('Erreur lors de la sauvegarde des paramètres SaaS.', 'error');
+    }
   };
 
   // Submit offline payment details

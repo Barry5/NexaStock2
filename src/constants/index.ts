@@ -190,7 +190,8 @@ export const DEFAULT_SAAS_SETTINGS = {
   mobileMoneyName: 'Hassim Barry',
   bankDetails: 'RIB: FR76 1234 5678 9012 3456 7890 123\nBanque: Société Générale Paris\nTitulaire: NexaStock SARL',
   paymentInstructions: 'Veuillez effectuer le virement ou versement, puis déclarer la transaction ci-dessous.',
-  automaticActivation: false
+  automaticActivation: false,
+  saasCurrency: 'EUR'
 };
 
 export const INVOICE_STATUS_LABELS: Record<string, string> = {
