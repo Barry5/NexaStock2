@@ -53,6 +53,16 @@ import BackupSettings from './settings/BackupSettings';
 import AdminBackupCenter from './admin/AdminBackupCenter';
 import AdminPlans from './admin/AdminPlans';
 import { saveGlobalSaaSSettingsToFirestore, savePricingPlansToFirestore } from '../lib/firebaseSync';
+import {
+  requestDriveAccessToken,
+  getActiveDriveToken,
+  disconnectDrive,
+  getDriveConnectionState,
+  uploadBackupToDrive,
+  listDriveBackups,
+  downloadDriveBackup,
+  mergeRestoredDataIntoDb,
+} from '../services/googleDriveService';
 
 
 export default function SaaSSettings() {
@@ -622,52 +632,60 @@ export default function SaaSSettings() {
 
   useEffect(() => {
     if (!isBackupAdmin) return;
-    const params = new URLSearchParams({ tenantId: gdriveTenantId });
-    fetch(`/api/admin/backups/gdrive/status?${params}`, { headers: authHeader() })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => { setGdriveConnected(d.connected); setGdriveEmail(d.email); })
-      .catch(() => {});
+    const state = getDriveConnectionState();
+    if (state.connected) {
+      setGdriveConnected(true);
+      setGdriveEmail(state.email);
+      getActiveDriveToken()
+        .then(token => listDriveBackups(token, gdriveTenantId))
+        .then(files => setGdriveBackups(files))
+        .catch(() => {});
+    }
   }, [isBackupAdmin, gdriveTenantId]);
 
   const handleGdriveConnect = async () => {
-    const params = new URLSearchParams({ tenantId: gdriveTenantId });
-    const res = await fetch(`/api/admin/backups/gdrive/auth-url?${params}`, { headers: authHeader() });
-    const { url } = await res.json();
-    const popup = window.open(url, 'gdrive-auth', 'width=500,height=600');
-    const handler = (e: MessageEvent) => {
-      if (e.data?.type === 'GDRIVE_AUTH_SUCCESS') {
-        setGdriveConnected(true);
-        setGdriveEmail(e.data.email);
-        if (e.data.tenantId) setGdriveTenantId(e.data.tenantId);
-        window.removeEventListener('message', handler);
-        popup?.close();
-      }
-    };
-    window.addEventListener('message', handler);
+    setGdriveLoading(true);
+    try {
+      const { token, profile } = await requestDriveAccessToken();
+      setGdriveConnected(true);
+      setGdriveEmail(profile.email);
+      addNotification(`Google Drive connecté avec succès : ${profile.email}`, 'success');
+      const files = await listDriveBackups(token, gdriveTenantId);
+      setGdriveBackups(files);
+    } catch (err: any) {
+      console.error('Erreur Google Drive Connect:', err);
+      addNotification(err.message || 'Échec de la connexion à Google Drive', 'error');
+    } finally {
+      setGdriveLoading(false);
+    }
   };
 
   const handleGdriveDisconnect = async () => {
-    const params = new URLSearchParams({ tenantId: gdriveTenantId });
-    await fetch(`/api/admin/backups/gdrive/revoke?${params}`, { method: 'DELETE', headers: authHeader() });
+    disconnectDrive();
     setGdriveConnected(false);
     setGdriveEmail(null);
     setGdriveBackups([]);
+    setGdriveSelectedBackup(null);
+    addNotification('Google Drive déconnecté', 'info');
   };
 
   const handleGdriveUpload = async () => {
+    if (!isBackupAdmin) return;
     setGdriveLoading(true);
     try {
-      const res = await fetch('/api/admin/backups/gdrive/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader() },
-        body: JSON.stringify({ label: backupLabel, strategy: backupStrategy, tenantId: gdriveTenantId }),
+      const token = await getActiveDriveToken();
+      const { file, manifest } = await uploadBackupToDrive(token, {
+        db,
+        tenantId: gdriveTenantId,
+        label: backupLabel,
+        strategy: backupStrategy,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Échec');
-      addNotification(`Sauvegarde Drive créée : ${data.manifest.label}`, 'success');
-      setGdriveBackups(prev => [data.manifest, ...prev]);
+      addNotification(`Sauvegarde créée sur Google Drive : ${manifest.label}`, 'success');
+      setBackupLabel('');
+      setGdriveBackups(prev => [file, ...prev]);
     } catch (err: any) {
-      addNotification(err.message || 'Erreur Drive', 'error');
+      console.error('Erreur Google Drive Upload:', err);
+      addNotification(err.message || 'Erreur lors de la sauvegarde sur Google Drive', 'error');
     } finally {
       setGdriveLoading(false);
     }
@@ -676,12 +694,16 @@ export default function SaaSSettings() {
   const handleLoadGdriveBackups = async () => {
     setGdriveLoading(true);
     try {
-      const params = new URLSearchParams({ tenantId: gdriveTenantId });
-      const res = await fetch(`/api/admin/backups/gdrive/list?${params}`, { headers: authHeader() });
-      const data = await res.json();
-      setGdriveBackups(data.backups || []);
-    } catch { setGdriveBackups([]); }
-    finally { setGdriveLoading(false); }
+      const token = await getActiveDriveToken();
+      const files = await listDriveBackups(token, gdriveTenantId);
+      setGdriveBackups(files);
+      addNotification(`${files.length} sauvegarde(s) Google Drive trouvée(s)`, 'info');
+    } catch (err: any) {
+      console.error('Erreur Google Drive List:', err);
+      addNotification(err.message || 'Impossible de lister les sauvegardes Google Drive', 'error');
+    } finally {
+      setGdriveLoading(false);
+    }
   };
 
   const handleGdriveRestore = async () => {
@@ -691,19 +713,24 @@ export default function SaaSSettings() {
     setGdriveRestoreDone(false);
     const steps = ['Produits', 'Clients', 'Ventes', 'Stock', 'Paiements'];
     try {
-      const res = await fetch('/api/admin/backups/gdrive/restore', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader() },
-        body: JSON.stringify({ manifestId: gdriveSelectedBackup.id, tenantId: gdriveTenantId }),
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(d?.error || 'Échec restauration'); }
+      const token = await getActiveDriveToken();
+      const payload = await downloadDriveBackup(token, gdriveSelectedBackup.id);
+
+      // Simulation de la progression par étape
       for (const step of steps) {
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 450));
         setGdriveRestoreSteps(prev => [...prev, step]);
       }
+
+      // Fusion des données dans l'état local et cloud
+      const nextDb = mergeRestoredDataIntoDb(db, payload.data, gdriveTenantId);
+      handleUpdateDb(nextDb);
+
       setGdriveRestoreDone(true);
+      addNotification('Restauration Google Drive terminée avec succès !', 'success');
     } catch (err: any) {
-      addNotification(err.message || 'Erreur restauration', 'error');
+      console.error('Erreur Google Drive Restore:', err);
+      addNotification(err.message || 'Erreur de restauration depuis Google Drive', 'error');
       setGdriveRestoring(false);
     }
   };
