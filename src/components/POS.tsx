@@ -23,6 +23,7 @@ import POSCheckoutSuccessModal from './pos/POSCheckoutSuccessModal';
 import POSReturnModal from './pos/POSReturnModal';
 import POSShareModal from './pos/POSShareModal';
 import POSCommissionPanel, { type POSCommissionPanelHandle, type CommissionPayload } from './pos/POSCommissionPanel';
+import { printReceipt } from '../lib/receiptPrinter';
 
 function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = localStorage.getItem('nexastock_token');
@@ -273,6 +274,8 @@ export default function POS() {
             historySearch={historySearch} setHistorySearch={setHistorySearch}
             historyFilterStatus={historyFilterStatus} setHistoryFilterStatus={setHistoryFilterStatus}
             filteredHistory={filteredHistory}
+            salesHistory={salesHistory}
+            currentCashier={currentCashier}
             activeSaleDetail={activeSaleDetail}
             selectedSaleDetail={selectedSaleDetail} setSelectedSaleDetail={setSelectedSaleDetail}
             currency={currency}
@@ -300,6 +303,9 @@ export default function POS() {
           <POSRapports
             currency={currency}
             reportsData={reportsData}
+            sales={salesHistory}
+            activeTenant={activeTenant}
+            currentUserName={currentCashier?.name || 'Responsable Ventes'}
           />
         )}
 
@@ -336,6 +342,14 @@ export default function POS() {
         currency={currency}
         commissionNotification={commissionNotification}
         onPrintReceipt={() => {
+          if (generatedSale) {
+            printReceipt({
+              sale: generatedSale,
+              tenant: activeTenant,
+              currency,
+              format: '80mm',
+            });
+          }
           setSelectedSaleDetail(generatedSale);
           setCheckoutSuccess(false);
           setActiveTab('historique');

@@ -314,10 +314,10 @@ function AppShell() {
             <div className="flex items-center justify-between text-[11px] text-gray-400 px-1">
               <span 
                 className="flex items-center gap-1.5"
-                title={isOnline ? (activeUser?.role === 'superadmin' ? 'Connecté à Firebase Cloud' : 'Synchronisation Cloud sécurisée en temps réel active') : 'Mode hors-ligne local'}
+                title={isOnline ? (activeUser?.role === 'superadmin' ? 'Connecté à Firebase Cloud' : 'Système connecté et synchronisé') : 'Mode hors-ligne local'}
               >
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                {isOnline ? (activeUser?.role === 'superadmin' ? 'Firebase Cloud' : 'Cloud Sécurisé') : 'Hors Ligne'}
+                {isOnline ? (activeUser?.role === 'superadmin' ? 'Firebase Cloud' : 'En Ligne') : 'Hors Ligne'}
               </span>
             </div>
 

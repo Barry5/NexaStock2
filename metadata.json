@@ -1,6 +1,6 @@
 {
   "name": "NexaStock SaaS",
-  "description": "Plateforme SaaS ERP et POS intelligente multi-boutique avec gestion des stocks, facturation et synchronisation Firebase Firestore.",
+  "description": "Plateforme SaaS ERP et POS intelligente multi-boutique avec gestion des stocks, facturation et synchronisation Cloud sécurisée en temps réel.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

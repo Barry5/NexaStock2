@@ -17,7 +17,7 @@ export function Header() {
       addNotification(
         isSuperAdmin 
           ? 'Synchronisation Firebase Firestore en cours...' 
-          : 'Synchronisation Cloud sécurisée en cours...'
+          : 'Synchronisation des données en cours...'
       );
       await handleUpdateDb(db);
       addNotification(
@@ -115,9 +115,9 @@ export function Header() {
             ) : (
               <span 
                 className="text-emerald-400 flex items-center gap-1"
-                title={isSuperAdmin ? 'Canal direct Firestore actif' : 'Synchronisation Cloud sécurisée en temps réel'}
+                title={isSuperAdmin ? 'Canal direct Firestore actif' : 'Données synchronisées en temps réel'}
               >
-                <Cloud className="w-3 h-3" /> {isSuperAdmin ? 'Firestore' : 'Cloud Sécurisé'}
+                <Cloud className="w-3 h-3" /> {isSuperAdmin ? 'Firestore' : 'En ligne'}
               </span>
             )}
             <button onClick={handleManualSync} title="Synchroniser" className="text-gray-500 hover:text-white transition">

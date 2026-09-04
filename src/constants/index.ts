@@ -125,7 +125,7 @@ export const DEFAULT_PRICING_PLANS = [
       'Assistant IA Gemini pour réapprovisionnement prédictif',
       'Multi-Boutiques & Transferts inter-dépôts illimités',
       'Gestion avancée des commissions & livreurs',
-      'Sauvegarde Cloud continue & Firestore temps réel',
+      'Sauvegarde continue & Synchronisation temps réel',
       'Rapprochement bancaire & Registre d\'audit',
       'Support VIP dédié 24/7 avec assistance directe'
     ],

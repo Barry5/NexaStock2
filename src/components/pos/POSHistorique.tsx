@@ -1,15 +1,20 @@
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Search, FileText, Printer, Send, RotateCcw, FileCheck,
   Settings, Calendar, History
 } from 'lucide-react';
 import type { PaymentHistoryItem } from '../../types';
-import { getSaleDisplayState } from '../../services/posHistory';
+import { getSaleDisplayState, getDeliveryBadge } from '../../services/posHistory';
+import { printReceipt } from '../../lib/receiptPrinter';
+import SalesReportExportModal from './SalesReportExportModal';
 
 interface POSHistoriqueProps {
   historySearch: string; setHistorySearch: (v: string) => void;
   historyFilterStatus: string; setHistoryFilterStatus: (v: string) => void;
   filteredHistory: any[];
+  salesHistory?: any[];
+  currentCashier?: any;
   activeSaleDetail: any;
   selectedSaleDetail: any; setSelectedSaleDetail: (v: any) => void;
   currency: string;
@@ -36,6 +41,8 @@ export default function POSHistorique(props: POSHistoriqueProps) {
     historySearch, setHistorySearch,
     historyFilterStatus, setHistoryFilterStatus,
     filteredHistory,
+    salesHistory,
+    currentCashier,
     activeSaleDetail,
     selectedSaleDetail, setSelectedSaleDetail,
     currency,
@@ -54,6 +61,8 @@ export default function POSHistorique(props: POSHistoriqueProps) {
     sidebarPayMethod, setSidebarPayMethod,
     sidebarPayRef, setSidebarPayRef,
   } = props;
+
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
 
   return (
     <motion.div
@@ -76,7 +85,7 @@ export default function POSHistorique(props: POSHistoriqueProps) {
           />
         </div>
 
-        <div className="flex gap-2 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
           {['Tous', 'Payée', 'Partiellement payée', 'En attente', 'Remboursée'].map(status => (
             <button
               key={status}
@@ -90,6 +99,15 @@ export default function POSHistorique(props: POSHistoriqueProps) {
               {status}
             </button>
           ))}
+
+          <button
+            onClick={() => setIsReportModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/25 transition shadow-sm ml-auto md:ml-2"
+            title="Extraire la liste des ventes en PDF sur une période donnée"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>Extraction PDF</span>
+          </button>
         </div>
       </div>
 
@@ -225,6 +243,7 @@ export default function POSHistorique(props: POSHistoriqueProps) {
         <div className="lg:col-span-5 bg-gray-900 border border-gray-850 rounded-2xl p-5 space-y-4">
           {activeSaleDetail ? (() => {
             const selectedSaleDetail = activeSaleDetail;
+            const deliveryBadge = getDeliveryBadge(selectedSaleDetail.deliveryStatus);
             return (
               <div className="space-y-4">
                 <div className="flex justify-between items-center pb-3 border-b border-gray-850">
@@ -258,7 +277,7 @@ export default function POSHistorique(props: POSHistoriqueProps) {
               </div>
 
               {/* PREMIUM DOCUMENT LAYOUT RENDER PREVIEW */}
-              <div className="bg-white text-gray-900 rounded-2xl p-4.5 font-sans overflow-hidden border border-gray-200 text-xs shadow-2xl relative">
+              <div id="pos-printable-receipt" className="bg-white text-gray-900 rounded-2xl p-4.5 font-sans overflow-hidden border border-gray-200 text-xs shadow-2xl relative">
                 
                 {/* Thermal Receipt Layout */}
                 {previewReceiptFormat !== 'A4' ? (
@@ -276,7 +295,7 @@ export default function POSHistorique(props: POSHistoriqueProps) {
                       <p>Client: {selectedSaleDetail.customerName}</p>
                       <p>Caissier: {selectedSaleDetail.employeeName}</p>
                       <p className="pt-1 text-[9px] text-gray-700">Règlement: <strong className="uppercase">{selectedSaleDetail.status === 'Payée' || selectedSaleDetail.paymentMethod !== 'credit' ? 'TOTAL (Payé)' : selectedSaleDetail.status === 'Partiellement payée' ? 'PARTIEL' : 'NON PAYÉ'}</strong></p>
-                      <p className="text-[9px] text-gray-700">Livraison: <strong className="uppercase">{selectedSaleDetail.deliveryStatus === 'livré' || !selectedSaleDetail.deliveryStatus ? 'LIVRÉ' : 'NON LIVRÉ'}</strong></p>
+                      <p className="text-[9px] text-gray-700">Livraison: <strong className="uppercase" style={{ color: deliveryBadge.colorHex }}>{deliveryBadge.label}</strong></p>
                     </div>
 
                     <table className="w-full text-left text-[10px] border-t border-b border-dashed border-gray-300 py-1.5">
@@ -356,11 +375,9 @@ export default function POSHistorique(props: POSHistoriqueProps) {
                           </p>
                           <p className="text-gray-800 text-[10px]">
                             Livraison : <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase ${
-                              selectedSaleDetail.deliveryStatus === 'livré' || !selectedSaleDetail.deliveryStatus
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-amber-100 text-amber-800'
+                              deliveryBadge.bgClass
                             }`}>
-                              {selectedSaleDetail.deliveryStatus === 'livré' || !selectedSaleDetail.deliveryStatus ? 'LIVRÉ' : 'NON LIVRÉ'}
+                              {deliveryBadge.label}
                             </span>
                           </p>
                         </div>
@@ -540,17 +557,17 @@ export default function POSHistorique(props: POSHistoriqueProps) {
                     <div className="flex justify-between items-center">
                       <span className="text-[9px] font-mono text-gray-500 uppercase">2. Livraison</span>
                       <span className={`px-1.5 py-0.2 rounded text-[8px] font-bold uppercase ${
-                        selectedSaleDetail.deliveryStatus === 'Livrée' ? 'bg-emerald-500/15 text-emerald-400' :
-                        selectedSaleDetail.deliveryStatus === 'Partiellement livrée' ? 'bg-amber-500/15 text-amber-400' :
-                        selectedSaleDetail.deliveryStatus === 'Retournée' ? 'bg-purple-500/15 text-purple-400' :
+                        deliveryBadge.normalized === 'Livrée' ? 'bg-emerald-500/15 text-emerald-400' :
+                        deliveryBadge.normalized === 'Partiellement livrée' ? 'bg-amber-500/15 text-amber-400' :
+                        deliveryBadge.normalized === 'Retournée' ? 'bg-purple-500/15 text-purple-400' :
                         'bg-red-500/15 text-red-400'
                       }`}>
-                        {selectedSaleDetail.deliveryStatus || 'Non livrée'}
+                        {deliveryBadge.display}
                       </span>
                     </div>
                     {selectedSaleDetail.invoiceStatus !== 'Archivée' && selectedSaleDetail.invoiceStatus !== 'Annulée' ? (
                       <select
-                        value={selectedSaleDetail.deliveryStatus || 'Non livrée'}
+                        value={deliveryBadge.normalized}
                         onChange={(e) => {
                           const nextDeliv = e.target.value as any;
                           handleUpdateSaleERPStatuses(selectedSaleDetail.id, { deliveryStatus: nextDeliv });
@@ -742,10 +759,18 @@ export default function POSHistorique(props: POSHistoriqueProps) {
                 </button>
 
                 <button
-                  onClick={() => window.print()}
-                  className="w-full bg-gray-950 border border-gray-850 hover:bg-gray-850 text-gray-300 font-bold py-2 rounded-xl transition flex items-center justify-center gap-1.5"
+                  type="button"
+                  onClick={() => {
+                    printReceipt({
+                      sale: selectedSaleDetail,
+                      tenant: activeTenant,
+                      currency,
+                      format: (previewReceiptFormat as '58mm' | '80mm' | 'A4') || '80mm'
+                    });
+                  }}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20 active:scale-[0.99]"
                 >
-                  <Printer className="w-4 h-4" /> Imprimer Physique
+                  <Printer className="w-4 h-4" /> Imprimer le Reçu ({previewReceiptFormat})
                 </button>
 
                 <button
@@ -774,6 +799,16 @@ export default function POSHistorique(props: POSHistoriqueProps) {
         </div>
 
       </div>
+
+      {/* MODAL D'EXTRACTION PDF PROFESSIONNELLE */}
+      <SalesReportExportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        sales={salesHistory || filteredHistory || []}
+        currency={currency}
+        activeTenant={activeTenant}
+        currentUserName={currentCashier?.name || 'Caissier'}
+      />
     </motion.div>
   );
 }

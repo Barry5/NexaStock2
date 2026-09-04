@@ -1,12 +1,14 @@
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import {
-  TrendingUp, Coins, Calendar, ShoppingBag
+  TrendingUp, Coins, Calendar, ShoppingBag, Printer, FileSpreadsheet
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie
 } from 'recharts';
+import SalesReportExportModal from './SalesReportExportModal';
 
 interface POSRapportsProps {
   currency: string;
@@ -21,10 +23,14 @@ interface POSRapportsProps {
     bestSellersList: { name: string; qty: number; totalRev: number }[];
     paymentShares: { name: string; value: number }[];
   };
+  sales?: any[];
+  activeTenant?: any;
+  currentUserName?: string;
 }
 
 export default function POSRapports(props: POSRapportsProps) {
-  const { currency, reportsData } = props;
+  const { currency, reportsData, sales, activeTenant, currentUserName } = props;
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   return (
     <motion.div
@@ -197,10 +203,11 @@ export default function POSRapports(props: POSRapportsProps) {
             </p>
             <div className="pt-2">
               <button
-                onClick={() => alert("Simulation d'export PDF en cours... Votre rapport global est prêt à être partagé.")}
-                className="bg-blue-600 hover:bg-blue-500 transition text-white text-xs font-mono font-bold px-4 py-2 rounded-xl shadow-lg shadow-blue-500/15"
+                onClick={() => setIsExportModalOpen(true)}
+                className="bg-blue-600 hover:bg-blue-500 transition text-white text-xs font-mono font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-blue-500/15 flex items-center gap-2"
               >
-                Exporter le journal des ventes complet (Excel/PDF)
+                <Printer className="w-4 h-4" />
+                Exporter le journal des ventes complet (PDF & Excel)
               </button>
             </div>
           </div>
@@ -208,6 +215,15 @@ export default function POSRapports(props: POSRapportsProps) {
         </div>
       </div>
 
+      {/* MODAL OFFICIEL D'EXTRACTION PDF & EXCEL */}
+      <SalesReportExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        sales={sales || []}
+        currency={currency}
+        activeTenant={activeTenant}
+        currentUserName={currentUserName || 'Responsable Ventes'}
+      />
     </motion.div>
   );
 }

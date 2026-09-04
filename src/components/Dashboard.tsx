@@ -10,6 +10,7 @@ import { formatCurrency } from '../utils';
 import { CHART_COLORS } from '../constants';
 import { computeRevenueBreakdown, buildDailyRevenueSeries, mergeTransactions, dateKey, toISOKey } from '../utils/revenue';
 import type { Invoice } from '../types';
+import { printSalesReport } from '../lib/salesReportPrinter';
 
 const COLORS = CHART_COLORS;
 
@@ -154,52 +155,22 @@ function DashboardInner() {
   const reportTotalRevenue = useMemo(() => filteredSalesForReport.reduce((acc, s) => acc + s.total, 0), [filteredSalesForReport]);
 
   const handlePrintSalesReportPDF = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) { alert("La fenêtre d'impression a été bloquée."); return; }
-    const tableRows = filteredSalesForReport.map(sale => {
-      const dateStr = new Date(sale.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const itemsList = sale.items.map(it => `${it.productName} (x${it.quantity})`).join(', ');
-      return `<tr style="border-bottom:1px solid #edf2f7;font-size:11px;">
-        <td style="padding:10px;font-weight:bold;font-family:monospace;color:#ef4444;">${sale.invoiceNumber}</td>
-        <td style="padding:10px;">${dateStr}</td>
-        <td style="padding:10px;font-weight:500;">${sale.customerName || 'Passager'}</td>
-        <td style="padding:10px;font-size:10px;color:#4a5568;max-width:280px;">${itemsList}</td>
-        <td style="padding:10px;text-transform:uppercase;font-weight:600;font-family:monospace;font-size:10px;">${sale.paymentMethod}</td>
-        <td style="padding:10px;text-align:right;font-weight:bold;font-family:monospace;color:#1a202c;">${sale.total.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} ${activeTenant?.currency || 'EUR'}</td>
-      </tr>`;
-    }).join('');
-    const logoHtml = activeTenant?.logo?.trim()
-      ? `<img src="${activeTenant.logo}" alt="Logo" style="height:50px;object-fit:contain;margin-bottom:10px;border-radius:6px;" />`
-      : `<div style="font-size:20px;font-weight:bold;color:#ef4444;border:2px solid #ef4444;padding:4px 10px;display:inline-block;border-radius:4px;font-family:sans-serif;">${activeTenant?.name?.[0] || 'N'}</div>`;
-    const currentDateStr = new Date().toLocaleString('fr-FR');
-    const periodStr = pdfStartDate || pdfEndDate ? `Période du ${pdfStartDate || 'début'} au ${pdfEndDate || 'fin'}` : 'Toutes les ventes enregistrées';
-    printWindow.document.write(`<!DOCTYPE html><html><head><title>Rapport de Ventes - ${activeTenant?.name || 'Organisation'}</title><style>
-      body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#2d3748;margin:0;padding:40px;line-height:1.4;}
-      .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #edf2f7;padding-bottom:20px;margin-bottom:25px;}
-      .company-info h1{margin:0;font-size:18px;font-weight:800;color:#1a202c;}
-      .company-info p{margin:3px 0 0;font-size:10px;color:#718096;}
-      .report-title h2{margin:0;font-size:20px;font-weight:900;color:#ef4444;text-transform:uppercase;letter-spacing:1px;}
-      .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:25px;}
-      .stat-card{background:#f7fafc;border:1px solid #edf2f7;border-radius:6px;padding:10px 12px;}
-      .stat-card .label{font-size:8px;text-transform:uppercase;color:#718096;font-weight:bold;letter-spacing:.5px;}
-      .stat-card .val{font-size:14px;font-weight:bold;color:#1a202c;margin-top:4px;font-family:monospace;}
-      .sales-table{width:100%;border-collapse:collapse;margin-top:15px;}
-      .sales-table th{background:#f7fafc;color:#4a5568;font-size:8px;font-weight:bold;text-transform:uppercase;padding:8px 10px;text-align:left;border-bottom:2px solid #edf2f7;}
-      .footer{margin-top:50px;border-top:1px solid #edf2f7;padding-top:12px;text-align:center;font-size:9px;color:#a0aec0;}
-      @media print{body{padding:0}}
-    </style></head><body>
-      <div class="header"><div class="company-info">${logoHtml}<h1>${activeTenant?.name || 'Organisation'}</h1><p>${activeTenant?.address || 'Adresse de la boutique'}</p><p>Tél : ${activeTenant?.phone || 'Non renseigné'}</p></div>
-      <div class="report-title"><h2>Rapport de Ventes</h2><p>${periodStr}</p><p style="margin-top:6px;">Généré le : ${currentDateStr}</p></div></div>
-      <div class="stats-grid"><div class="stat-card"><div class="label">Chiffre d'Affaires</div><div class="val" style="color:#10b981;">${reportTotalRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} ${activeTenant?.currency || 'EUR'}</div></div>
-      <div class="stat-card"><div class="label">Nombre de Ventes</div><div class="val">${filteredSalesForReport.length}</div></div>
-      <div class="stat-card"><div class="label">Panier Moyen</div><div class="val">${filteredSalesForReport.length > 0 ? (reportTotalRevenue / filteredSalesForReport.length).toLocaleString('fr-FR', { minimumFractionDigits: 2 }) : '0,00'} ${activeTenant?.currency || 'EUR'}</div></div>
-      <div class="stat-card"><div class="label">Filtre Paiement</div><div class="val" style="text-transform:uppercase;">${pdfPaymentMethod}</div></div></div>
-      <h3 style="font-size:12px;font-weight:bold;border-bottom:1px solid #edf2f7;padding-bottom:4px;color:#4a5568;">Détail des transactions</h3>
-      <table class="sales-table"><thead><tr><th>Référence</th><th>Date</th><th>Client</th><th>Articles</th><th>Méthode</th><th style="text-align:right;">Montant</th></tr></thead><tbody>${tableRows || '<tr><td colspan="6" style="text-align:center;padding:25px;color:#a0aec0;">Aucune transaction.</td></tr>'}</tbody></table>
-      <div style="margin-top:25px;text-align:right;"><p style="font-size:11px;color:#718096;margin:0;">Total net :</p><p style="font-size:18px;font-weight:bold;color:#1a202c;margin:4px 0 0;font-family:monospace;">${reportTotalRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} ${activeTenant?.currency || 'EUR'}</p></div>
-      <div class="footer"><p>Document comptable généré par NexaStock SaaS Central.</p></div>
-      <script>window.onload=function(){window.print();};<\/script></body></html>`);
-    printWindow.document.close();
+    printSalesReport({
+      sales: filteredSalesForReport,
+      period: {
+        startDate: pdfStartDate,
+        endDate: pdfEndDate,
+        presetLabel: pdfStartDate || pdfEndDate ? undefined : 'Toutes les ventes enregistrées'
+      },
+      filters: {
+        paymentMethod: pdfPaymentMethod
+      },
+      tenant: activeTenant,
+      currency: activeTenant?.currency || 'EUR',
+      orientation: 'landscape',
+      generatedBy: 'Direction Commerciale',
+      title: 'EXTRACTION & RAPPORT DES VENTES'
+    });
   };
 
   const handlePrintSingleSalePDF = (sale: any) => {

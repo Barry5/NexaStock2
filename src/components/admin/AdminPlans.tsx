@@ -63,7 +63,7 @@ const SUGGESTED_FEATURES = [
   'Multi-Boutiques & transferts de stocks',
   'Gestion des commissions & livreurs',
   'Exports Excel, CSV et bilans comptables',
-  'Sauvegarde Cloud & Firestore temps réel',
+  'Sauvegarde continue & Synchronisation temps réel',
   'Support dédié 24/7 & assistance VIP',
   'Accès API REST & Webhooks'
 ];
@@ -122,7 +122,7 @@ const PRESET_TEMPLATES = [
       'Assistant IA Gemini pour réapprovisionnement prédictif',
       'Multi-Boutiques & Transferts inter-dépôts illimités',
       'Gestion avancée des commissions & livreurs',
-      'Sauvegarde Cloud continue & Firestore temps réel',
+      'Sauvegarde continue & Synchronisation temps réel',
       'Support VIP dédié 24/7 avec assistance directe'
     ],
     limits: { maxProducts: 999999, maxSales: 999999, maxCustomers: 999999, maxUsers: 25, maxWarehouses: 10 }
