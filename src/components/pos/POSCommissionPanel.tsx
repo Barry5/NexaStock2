@@ -1,14 +1,8 @@
 import { useState, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Handshake, ChevronDown, ChevronUp, Calendar, Check, X, AlertTriangle, DollarSign } from 'lucide-react';
-
-function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem('nexastock_token');
-  return fetch(url, {
-    ...options,
-    headers: { ...options.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  });
-}
+import { Handshake, ChevronDown, ChevronUp, Calendar, Check, X, AlertTriangle, DollarSign, Plus, UserPlus } from 'lucide-react';
+import { useDB, useApp } from '../../context';
+import type { Affiliate } from '../../types';
 
 interface CartItem {
   product: { id: string; name: string; sellPrice: number; buyPrice: number };
@@ -46,16 +40,32 @@ const SCHEDULE_OPTIONS = [
 ];
 
 const POSCommissionPanel = forwardRef<POSCommissionPanelHandle, Props>(({ cart, onCartUpdate, currency = 'GNF' }, ref) => {
-  const [affiliates, setAffiliates] = useState<any[]>([]);
+  const { db, handleUpdateDb, addNotification } = useDB();
+  const { activeTenantId } = useApp();
+
   const [selectedAffiliateId, setSelectedAffiliateId] = useState('');
   const [schedule, setSchedule] = useState('immediate');
   const [customDate, setCustomDate] = useState('');
   const [mode, setMode] = useState<'normal' | 'apporteur'>('normal');
   const [expanded, setExpanded] = useState(true);
   const [bulkPercent, setBulkPercent] = useState('');
+  
+  // Quick create modal state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newFirstName, setNewFirstName] = useState('');
+  const [newLastName, setNewLastName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [newCompany, setNewCompany] = useState('');
+  const [newDefaultRate, setNewDefaultRate] = useState('');
 
-  const applyBulkPercent = () => {
-    const pct = parseFloat(bulkPercent);
+  const affiliates = useMemo(() => {
+    return (db.affiliates || []).filter(
+      (a: Affiliate) => a.tenantId === activeTenantId && a.status !== 'suspended' && a.status !== 'blocked'
+    );
+  }, [db.affiliates, activeTenantId]);
+
+  const applyBulkPercent = (percentVal?: number) => {
+    const pct = percentVal !== undefined ? percentVal : parseFloat(bulkPercent);
     if (isNaN(pct) || pct < 0) return;
     const updated = cart.map(item => ({
       ...item,
@@ -64,17 +74,51 @@ const POSCommissionPanel = forwardRef<POSCommissionPanelHandle, Props>(({ cart, 
     onCartUpdate(updated);
   };
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await authFetch('/api/commissions/affiliates');
-        if (res.ok) {
-          const data = await res.json();
-          setAffiliates(data.filter((a: any) => a.status === 'active'));
-        }
-      } catch {}
-    })();
-  }, []);
+  const handleQuickCreateAffiliate = () => {
+    if (!newFirstName.trim() || !newLastName.trim()) {
+      addNotification('Le prénom et le nom sont obligatoires', 'error');
+      return;
+    }
+
+    const tenantAffiliates = (db.affiliates || []).filter((a: Affiliate) => a.tenantId === activeTenantId);
+    const nextIndex = tenantAffiliates.length + 1;
+    const code = `APP-${String(nextIndex).padStart(3, '0')}`;
+    const rateNum = parseFloat(newDefaultRate);
+
+    const newAffiliate: Affiliate = {
+      id: 'aff_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      code,
+      firstName: newFirstName.trim(),
+      lastName: newLastName.trim(),
+      phone: newPhone.trim() || undefined,
+      company: newCompany.trim() || undefined,
+      status: 'active',
+      defaultCommissionRate: !isNaN(rateNum) && rateNum > 0 ? rateNum : undefined,
+      tenantId: activeTenantId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    handleUpdateDb({
+      ...db,
+      affiliates: [...(db.affiliates || []), newAffiliate],
+    });
+
+    setSelectedAffiliateId(newAffiliate.id);
+    setShowCreateModal(false);
+    setNewFirstName('');
+    setNewLastName('');
+    setNewPhone('');
+    setNewCompany('');
+    setNewDefaultRate('');
+
+    if (!isNaN(rateNum) && rateNum > 0) {
+      setBulkPercent(String(rateNum));
+      applyBulkPercent(rateNum);
+    }
+
+    addNotification(`Apporteur ${newAffiliate.firstName} ${newAffiliate.lastName} créé et sélectionné !`, 'success');
+  };
 
   useEffect(() => {
     if (mode === 'normal') {
@@ -92,6 +136,16 @@ const POSCommissionPanel = forwardRef<POSCommissionPanelHandle, Props>(({ cart, 
   };
 
   const selectedAffiliate = affiliates.find(a => a.id === selectedAffiliateId);
+
+  // Auto-fill default commission percent when affiliate is selected
+  const handleSelectAffiliate = (id: string) => {
+    setSelectedAffiliateId(id);
+    const aff = affiliates.find(a => a.id === id);
+    if (aff?.defaultCommissionRate && aff.defaultCommissionRate > 0) {
+      setBulkPercent(String(aff.defaultCommissionRate));
+      applyBulkPercent(aff.defaultCommissionRate);
+    }
+  };
 
   const commissionSummary = useMemo(() => {
     let total = 0;
@@ -163,19 +217,39 @@ const POSCommissionPanel = forwardRef<POSCommissionPanelHandle, Props>(({ cart, 
       {mode === 'apporteur' && (
         <div className="p-4 space-y-4">
           <div>
-            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">
-              Sélectionner l'apporteur
-            </label>
-            <select value={selectedAffiliateId} onChange={e => setSelectedAffiliateId(e.target.value)}
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">
+                Sélectionner l'apporteur
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(true)}
+                className="text-[10px] font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1 transition"
+              >
+                <Plus className="w-3 h-3" /> + Nouvel apporteur
+              </button>
+            </div>
+            <select value={selectedAffiliateId} onChange={e => handleSelectAffiliate(e.target.value)}
               className="w-full bg-gray-950 border border-gray-800 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-brand-blue"
             >
               <option value="">-- Choisir un apporteur --</option>
               {affiliates.map(a => (
-                <option key={a.id} value={a.id}>{a.firstName} {a.lastName} {a.phone ? `(${a.phone})` : ''}</option>
+                <option key={a.id} value={a.id}>
+                  {a.firstName} {a.lastName} {a.company ? `• ${a.company}` : ''} {a.phone ? `(${a.phone})` : ''}
+                </option>
               ))}
             </select>
             {affiliates.length === 0 && (
-              <p className="text-[10px] text-amber-400 mt-1">Aucun apporteur actif. Créez-en un dans la section Commissions.</p>
+              <div className="mt-2 p-2 bg-blue-950/30 border border-blue-900/40 rounded-xl flex items-center justify-between">
+                <span className="text-[11px] text-gray-300">Aucun apporteur enregistré.</span>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(true)}
+                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold rounded-lg flex items-center gap-1"
+                >
+                  <UserPlus className="w-3 h-3" /> Créer maintenant
+                </button>
+              </div>
             )}
           </div>
 
@@ -323,6 +397,134 @@ const POSCommissionPanel = forwardRef<POSCommissionPanelHandle, Props>(({ cart, 
           )}
         </div>
       )}
+
+      {/* Quick Create Modal */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                    <UserPlus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Nouvel Apporteur d'Affaires</h3>
+                    <p className="text-[10px] text-gray-400">Création rapide sans quitter la caisse</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Prénom <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newFirstName}
+                      onChange={e => setNewFirstName(e.target.value)}
+                      placeholder="Ex: Mamadou"
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Nom <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newLastName}
+                      onChange={e => setNewLastName(e.target.value)}
+                      placeholder="Ex: Diallo"
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Téléphone
+                    </label>
+                    <input
+                      type="text"
+                      value={newPhone}
+                      onChange={e => setNewPhone(e.target.value)}
+                      placeholder="620 00 00 00"
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Société / Entreprise
+                    </label>
+                    <input
+                      type="text"
+                      value={newCompany}
+                      onChange={e => setNewCompany(e.target.value)}
+                      placeholder="Ex: Agence Immo"
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                    Taux de commission par défaut (%)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={newDefaultRate}
+                      onChange={e => setNewDefaultRate(e.target.value)}
+                      placeholder="Ex: 5"
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 font-mono">%</span>
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Ce taux sera automatiquement appliqué aux articles commissionnés.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold rounded-xl transition"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={handleQuickCreateAffiliate}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-600/20 transition flex items-center gap-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" /> Enregistrer & Sélectionner
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 });

@@ -519,6 +519,9 @@ export interface Affiliate {
   status: 'active' | 'suspended' | 'blocked';
   commissionRules?: string;
   notes?: string;
+  defaultCommissionRate?: number;
+  payoutMethod?: string;
+  payoutDetails?: string;
   tenantId: string;
   createdAt: string;
   updatedAt: string;

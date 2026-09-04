@@ -24,56 +24,80 @@ import POSReturnModal from './pos/POSReturnModal';
 import POSShareModal from './pos/POSShareModal';
 import POSCommissionPanel, { type POSCommissionPanelHandle, type CommissionPayload } from './pos/POSCommissionPanel';
 import { printReceipt } from '../lib/receiptPrinter';
-
-function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const token = localStorage.getItem('nexastock_token');
-  return fetch(url, {
-    ...options,
-    headers: { ...options.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  });
-}
+import { useDB, useApp } from '../context';
 
 export default function POS() {
+  const { db, handleUpdateDb } = useDB();
+  const { activeTenantId } = useApp();
   const commissionRef = useRef<POSCommissionPanelHandle>(null);
   const commissionSnapshotRef = useRef<CommissionPayload | null>(null);
   const [commissionNotification, setCommissionNotification] = useState('');
 
-  const recordCommissionAfterCheckout = useCallback(async (sale: any) => {
+  const recordCommissionAfterCheckout = useCallback((sale: any) => {
     const payload = commissionSnapshotRef.current;
     commissionSnapshotRef.current = null;
-    if (!payload || payload.commissionItems.length === 0) return;
+    if (!payload || !payload.affiliateId || payload.commissionItems.length === 0) return;
 
     try {
-      const res = await authFetch('/api/commissions/v2/sale/record', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          saleId: sale.id,
+      const totalComm = payload.commissionItems.reduce(
+        (acc: number, it: any) => acc + (Number(it.commissionPerUnit) || 0) * (Number(it.quantity) || 1),
+        0
+      );
+      if (totalComm <= 0) return;
+
+      const affName = commissionRef.current?.getAffiliateName() || 'Apporteur';
+      const isImmediate = payload.paymentSchedule === 'immediate';
+
+      const newLedgerEntry = {
+        id: 'cml_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        affiliateId: payload.affiliateId,
+        type: 'commission' as const,
+        reference: sale.invoiceNumber || ('VNT-' + (sale.id ? sale.id.slice(-6) : Date.now().toString().slice(-6))),
+        referenceType: 'sale',
+        description: `Commission sur vente caisse ${sale.invoiceNumber || ''} (${payload.commissionItems.length} article(s))`,
+        credit: totalComm,
+        debit: 0,
+        balance: totalComm,
+        status: isImmediate ? ('paid' as const) : ('to_pay' as const),
+        invoiceId: sale.id,
+        invoiceNumber: sale.invoiceNumber,
+        customerName: sale.customerName || 'Passager',
+        commissionAmount: totalComm,
+        tenantId: activeTenantId || sale.tenantId,
+        createdAt: new Date().toISOString()
+      };
+
+      let nextPayments = db.commissionPayments || [];
+      if (isImmediate) {
+        const newPayment = {
+          id: 'cmp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          reference: 'PAY-' + Date.now().toString().slice(-6),
           affiliateId: payload.affiliateId,
-          invoiceNumber: sale.invoiceNumber,
-          customerName: sale.customerName,
-          saleDate: sale.date,
-          saleTotal: sale.total,
-          items: payload.commissionItems,
-          paymentSchedule: payload.paymentSchedule,
-          immediatePayment: payload.immediatePayment,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const affName = commissionRef.current?.getAffiliateName() || '';
-        setCommissionNotification(
-          `✅ Commission ${data.totalCommission.toLocaleString()} GNF enregistrée pour ${affName}`
-        );
-      } else {
-        const err = await res.json().catch(() => ({ error: 'Erreur serveur' }));
-        setCommissionNotification(`❌ Commission non enregistrée : ${err.error || 'erreur inconnue'}`);
+          affiliateName: affName,
+          amount: totalComm,
+          method: 'especes',
+          currency: 'GNF',
+          notes: `Règlement immédiat en caisse sur vente ${sale.invoiceNumber || ''}`,
+          ledgerIds: [newLedgerEntry.id],
+          tenantId: activeTenantId || sale.tenantId,
+          createdAt: new Date().toISOString()
+        };
+        nextPayments = [newPayment, ...nextPayments];
       }
+
+      handleUpdateDb({
+        ...db,
+        commissionLedger: [newLedgerEntry, ...(db.commissionLedger || [])],
+        commissionPayments: nextPayments
+      });
+
+      setCommissionNotification(
+        `✅ Commission ${totalComm.toLocaleString()} GNF enregistrée pour ${affName}${isImmediate ? ' (Régler en caisse)' : ' (Portée au compte)'}`
+      );
     } catch (err) {
       console.error('Commission recording failed:', err);
-      setCommissionNotification('❌ Commission non enregistrée (hors ligne ?). Vérifiez la connexion.');
     }
-  }, []);
+  }, [db, activeTenantId, handleUpdateDb]);
 
   const {
     // Basic state

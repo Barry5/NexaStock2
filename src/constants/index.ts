@@ -416,7 +416,7 @@ export const DEFAULT_MODULE_DEFINITIONS: SystemModuleConfig[] = [
   },
   {
     key: 'commissions',
-    label: 'Commissions & Apporteurs',
+    label: 'Apporteurs & Commissions',
     category: 'Commerce',
     description: 'Suivi des partenaires apporteurs d\'affaires, calculs et règlements des commissions.',
     icon: 'Award',
@@ -466,7 +466,7 @@ export function getDefaultModulesForPlan(planIdOrName: string = ''): string[] {
   
   // Standard / Business / PME
   if (norm.includes('standard') || norm.includes('business') || norm === 'plan-standard') {
-    return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'settings'];
+    return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'commissions', 'settings'];
   }
   
   // Pro / Entreprise / IA / Annual VIP
@@ -499,6 +499,6 @@ export function getDefaultModulesForPlan(planIdOrName: string = ''): string[] {
   }
 
   // Default fallback if unknown plan: give Standard bundle
-  return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'settings'];
+  return ['dashboard', 'products', 'sales', 'invoices', 'delivery-notes', 'customers', 'expenses', 'commissions', 'settings'];
 }
 

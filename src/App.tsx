@@ -154,7 +154,7 @@ function AppShell() {
       { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard, section: 'GÉNÉRAL', module: 'dashboard' },
       { id: 'invoicing', label: 'Factures ERP', icon: FileText, section: 'GÉNÉRAL', module: 'invoices' },
       { id: 'delivery-notes', label: 'Bons de Livraison', icon: Truck, section: 'GÉNÉRAL', module: 'invoices' },
-      { id: 'commissions', label: 'Commissions', icon: Award, section: 'GÉNÉRAL', module: 'commissions' },
+      { id: 'commissions', label: 'Apporteurs & Commissions', icon: Award, section: 'COMMERCE', module: 'commissions' },
       { id: 'products', label: 'Produits & Stocks', icon: Package, section: 'COMMERCE', module: 'products' },
       { id: 'pos', label: 'Caisse de Vente (POS)', icon: ShoppingBag, section: 'COMMERCE', module: 'sales' },
       { id: 'crm', label: 'Clients & Grossistes', icon: Users, section: 'COMMERCE', module: 'customers' },
