@@ -7,7 +7,8 @@ import { setItem as dexieSet, getItem as dexieGet, removeItem as dexieRemove } f
 import {
   subscribeToFirestoreChanges,
   saveGlobalSaaSSettingsToFirestore,
-  savePricingPlansToFirestore
+  savePricingPlansToFirestore,
+  pushBatchToFirestore
 } from '../lib/firebaseSync';
 
 interface DBContextValue {
@@ -138,9 +139,65 @@ export function DBProvider({ children }: { children: ReactNode }) {
 
   const loadStateFromServer = useCallback(async () => {
     try {
-      const data = await fetchServerState();
-      setDb(data);
-      persistCache(data);
+      // Tenter d'abord d'évacuer les modifications locales en attente
+      try {
+        await flushPendingChanges();
+      } catch (e) {
+        console.warn('[SYNC] flushPendingChanges avant chargement:', e);
+      }
+
+      const serverData = await fetchServerState();
+
+      // Fusion intelligente pour conserver et propager les données créées sur mobile
+      setDb(prev => {
+        const currentLocal = dbRef.current || prev;
+        const merged: DBState = { ...serverData };
+        const arrayFields: (keyof DBState)[] = [
+          'products', 'sales', 'customers', 'suppliers', 'expenses', 'loans',
+          'warehouses', 'transfers', 'auditLogs', 'invoices', 'deliveryOrders',
+          'payments', 'returns', 'affiliates', 'commissionRules', 'commissionLedger'
+        ];
+
+        let hasLocalUnsynced = false;
+        const missingChanges: any[] = [];
+
+        for (const field of arrayFields) {
+          const serverList = (serverData[field] as any[]) || [];
+          const localList = (currentLocal[field] as any[]) || (prev[field] as any[]) || [];
+          if (localList.length > 0) {
+            const serverIds = new Set(serverList.map((item: any) => item.id));
+            const localOnly = localList.filter((item: any) => item && item.id && !serverIds.has(item.id));
+            if (localOnly.length > 0) {
+              (merged as any)[field] = [...serverList, ...localOnly];
+              hasLocalUnsynced = true;
+              localOnly.forEach(item => {
+                missingChanges.push({
+                  table: field,
+                  recordId: item.id,
+                  operation: 'CREATE',
+                  data: item
+                });
+              });
+            }
+          }
+        }
+
+        if (hasLocalUnsynced && missingChanges.length > 0) {
+          pushBatchToFirestore(missingChanges)
+            .then(res => {
+              if (res.success > 0) {
+                console.log(`[SYNC] ${res.success} éléments locaux synchronisés vers Firestore`);
+              }
+            })
+            .catch(err =>
+              console.warn('[SYNC] Erreur synchro auto des éléments locaux vers Firestore:', err)
+            );
+        }
+
+        persistCache(merged);
+        return merged;
+      });
+
       setSyncError(false);
     } catch (err: any) {
       setSyncError(true);

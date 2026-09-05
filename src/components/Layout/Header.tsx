@@ -4,7 +4,7 @@ import { Cloud, CloudOff, RefreshCw, User as UserIcon, LogOut, ChevronDown, Chec
 import UserProfileModal from '../UserProfileModal';
 
 export function Header() {
-  const { db, isSyncing, syncError, isOnline, handleUpdateDb, addNotification } = useDB();
+  const { db, isSyncing, syncError, isOnline, handleUpdateDb, handleSyncFromServer, addNotification } = useDB();
   const { activeTenant, activeUser, activeTenantId, handleSwitchTenant, currentTab, setIsLoggedIn, setActiveUserId, setActiveTenantId } = useApp();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [tenantDropdownOpen, setTenantDropdownOpen] = useState(false);
@@ -20,13 +20,15 @@ export function Header() {
           : 'Synchronisation des données en cours...'
       );
       await handleUpdateDb(db);
+      await handleSyncFromServer();
       addNotification(
         isSuperAdmin 
           ? 'Base de données synchronisée avec Firestore !' 
-          : 'Données synchronisées avec succès !'
+          : 'Données synchronisées avec succès !',
+        'success'
       );
     } catch {
-      addNotification('Erreur lors de la synchronisation.');
+      addNotification('Erreur lors de la synchronisation.', 'error');
     }
   };
 

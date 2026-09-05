@@ -99,10 +99,24 @@ export async function syncWithServer(db: DBState): Promise<DBState> {
 
 export async function pushChanges(changes: SyncChange[]): Promise<PushResult> {
   const res = await pushBatchToFirestore(changes);
+  if (res.success === 0 && res.errors.length > 0) {
+    return {
+      applied: 0,
+      conflicts: [],
+      errors: changes.map(c => ({
+        table: c.table,
+        recordId: c.recordId,
+        error: res.errors.join('; ')
+      }))
+    };
+  }
   return {
     applied: res.success,
     conflicts: [],
-    errors: res.errors.map(err => ({ table: 'general', recordId: 'bulk', error: err }))
+    errors: res.errors.map(err => {
+      const match = err.match(/^[^/]+\/([^:]+):/);
+      return { table: 'general', recordId: match ? match[1] : 'bulk', error: err };
+    })
   };
 }
 

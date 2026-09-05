@@ -6,7 +6,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 // Initialiser Firestore avec le databaseId dédié s'il est spécifié
-const customDbId = (firebaseConfig as any)?.firestoreDatabaseId;
+const customDbId = (firebaseConfig as any)?.firestoreDatabaseId || 'ai-studio-9b22a110-1f53-45d9-a368-f424d742a852';
 export const db = customDbId && customDbId !== '(default)'
   ? getFirestore(app, customDbId)
   : getFirestore(app);

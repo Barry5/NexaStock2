@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Package, ShoppingBag, Users, Coins, Sparkles,
   Settings, Cloud, CloudLightning, CloudOff, Bell, Menu, X, Lock,
   Building, AlertOctagon, AlertTriangle, CreditCard, Database, Shield,
-  BarChart3, FileText, LifeBuoy, Award, Check, ShieldCheck, Truck
+  BarChart3, FileText, LifeBuoy, Award, Check, ShieldCheck, Truck, RefreshCw
 } from 'lucide-react';
 
 import type { TabType, DBState, Sale, Product, Customer, Tenant, User, SubscriptionPlan, SubscriptionPayment } from './types';
@@ -36,7 +36,8 @@ function AppShell() {
   const {
     db, isSyncing, syncError, isOnline, lastCacheTime, notifications,
     addNotification, handleUpdateDb, handleProductsUpdate, handleAddSale,
-    handleUpdateExpenses, handleUpdateLoans, handleUpdateCustomers, handleUpdateSuppliers
+    handleUpdateExpenses, handleUpdateLoans, handleUpdateCustomers, handleUpdateSuppliers,
+    handleSyncFromServer
   } = useDB();
 
   const {
@@ -221,7 +222,25 @@ function AppShell() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-gray-950 px-2 py-1 rounded-lg border border-gray-800 text-[10px] font-mono">
+          <button
+            onClick={async () => {
+              try {
+                addNotification('Synchronisation Cloud en cours...', 'info');
+                await handleUpdateDb(db);
+                await handleSyncFromServer();
+                addNotification('Synchronisation Cloud terminée avec succès !', 'success');
+              } catch {
+                addNotification('Erreur lors de la synchronisation.', 'error');
+              }
+            }}
+            disabled={isSyncing}
+            className="flex items-center gap-1.5 bg-gray-950 hover:bg-gray-800 px-2.5 py-1.5 rounded-lg border border-gray-800 text-[10px] font-mono text-gray-300 transition"
+            title="Synchroniser avec le Cloud"
+          >
+            <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-blue-400' : 'text-gray-400'}`} />
+            <span className="hidden xs:inline">{isSyncing ? 'Synchro...' : 'Sync'}</span>
+          </button>
+          <div className="flex items-center gap-1 bg-gray-950 px-2 py-1.5 rounded-lg border border-gray-800 text-[10px] font-mono">
             <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
             <Cloud className="w-3 h-3 text-gray-400" />
           </div>
