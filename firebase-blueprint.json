@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "Tenant": {
+      "title": "Tenant",
+      "description": "Represents a business or store tenant in NexaStock",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "plan": { "type": "string" },
+        "logo": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "currency": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "subscriptionStatus": { "type": "string" }
+      },
+      "required": ["id", "name", "plan", "currency"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Represents an authenticated user or administrator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "active": { "type": "boolean" },
+        "password": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "category": { "type": "string" },
+        "buyPrice": { "type": "number" },
+        "sellPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "warehouseId": { "type": "string" }
+      },
+      "required": ["id", "name", "buyPrice", "sellPrice", "stock"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Point-of-sale invoice transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "invoiceNumber": { "type": "string" },
+        "customerName": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "invoiceNumber", "totalAmount", "createdAt"]
+    },
+    "GlobalSaaSSettings": {
+      "title": "GlobalSaaSSettings",
+      "description": "System-wide SaaS settings and configurations",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string" },
+        "saasCurrency": { "type": "string" },
+        "superAdminEmail": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/tenants/{tenantId}": {
+      "schema": "Tenant",
+      "description": "Store and organization records"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Platform users and credentials"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Product catalog and inventory levels"
+    },
+    "/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Completed customer sales and transactions"
+    },
+    "/system/{systemDocId}": {
+      "schema": "GlobalSaaSSettings",
+      "description": "Global SaaS system configuration"
+    }
+  }
+}

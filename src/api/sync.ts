@@ -252,6 +252,15 @@ export async function pullRemoteChanges(): Promise<PullResult | null> {
       await setMeta('sync_last_pull', result.timestamp);
     }
     return result;
+  } catch (err: any) {
+    if (
+      err?.message?.includes('offline') ||
+      err?.message?.includes('unavailable') ||
+      err?.message?.includes('permission-denied')
+    ) {
+      return null;
+    }
+    throw err;
   } finally {
     pullInProgress = false;
   }

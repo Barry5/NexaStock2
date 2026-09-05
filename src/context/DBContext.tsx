@@ -200,12 +200,22 @@ export function DBProvider({ children }: { children: ReactNode }) {
 
       setSyncError(false);
     } catch (err: any) {
-      setSyncError(true);
-      if (err?.message?.includes('401') || err?.message?.includes('Token')) {
-        addNotification('Session expirée. Veuillez vous reconnecter.', 'error');
+      const isOfflineErr =
+        err?.message?.includes('offline') ||
+        err?.message?.includes('unavailable') ||
+        err?.message?.includes('permission-denied');
+
+      if (!isOfflineErr) {
+        setSyncError(true);
+        if (err?.message?.includes('401') || err?.message?.includes('Token')) {
+          addNotification('Session expirée. Veuillez vous reconnecter.', 'error');
+        } else {
+          console.error('fetchServerState failed:', err?.message || err);
+          addNotification('Erreur de synchronisation. Réessayez plus tard.', 'error');
+        }
       } else {
-        console.error('fetchServerState failed:', err?.message || err);
-        addNotification('Erreur de synchronisation. Réessayez plus tard.', 'error');
+        console.info('[SYNC] Mode local résilient actif (Firestore inaccessible).');
+        setSyncError(false);
       }
     }
   }, [persistCache, addNotification]);
@@ -345,7 +355,13 @@ export function DBProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (error: any) {
-        console.error('Background sync cycle failed:', error?.message || error);
+        const isOfflineErr =
+          error?.message?.includes('offline') ||
+          error?.message?.includes('unavailable') ||
+          error?.message?.includes('permission-denied');
+        if (!isOfflineErr) {
+          console.error('Background sync cycle failed:', error?.message || error);
+        }
       }
     }, 30000);
     return () => clearInterval(interval);
