@@ -25,9 +25,29 @@ export function usePOSState() {
     return db.users.find(u => u.tenantId === activeTenantId) || { id: 'u-1', name: 'Barry Hassim' };
   }, [db.users, activeTenantId]);
 
+  const effectiveTenantId = useMemo(() => {
+    return activeTenantId || activeTenant?.id || db.tenants[0]?.id || 'tenant-demo';
+  }, [activeTenantId, activeTenant, db.tenants]);
+
   const tenantProducts = useMemo(() => {
-    return db.products.filter(p => p.tenantId === activeTenantId);
-  }, [db.products, activeTenantId]);
+    const direct = db.products.filter(p => p.tenantId === effectiveTenantId);
+    const orphans = db.products.filter(p => !p.tenantId || p.tenantId === '');
+
+    if (effectiveTenantId === (db.tenants[0]?.id || 'tenant-demo') || db.tenants.length <= 1) {
+      const combined = [...direct];
+      for (const o of orphans) {
+        if (!combined.some(p => p.id === o.id)) {
+          combined.push(o);
+        }
+      }
+      if (combined.length > 0) return combined;
+    }
+
+    if (direct.length > 0) return direct;
+    if (orphans.length > 0) return orphans;
+    if (db.tenants.length <= 1) return db.products;
+    return [];
+  }, [db.products, effectiveTenantId, db.tenants]);
 
   const tenantCustomers = useMemo(() => {
     return db.customers.filter(c => c.tenantId === activeTenantId);

@@ -25,9 +25,16 @@ function getDb(): NexaStockDB {
 
 export async function setItem(key: string, value: string): Promise<void> {
   try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // localStorage full or restricted
+  }
+  try {
     await getDb().cache.put({ key, value, timestamp: Date.now() });
   } catch {
-    localStorage.setItem(key, value);
+    // Dexie fallback
   }
 }
 

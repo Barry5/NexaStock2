@@ -1,4 +1,4 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useState, useMemo, useEffect, type FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Package, MapPin, ArrowLeftRight, Layers } from 'lucide-react';
 import type { Product, Warehouse, StockTransfer, ProductVariant } from '../types';
@@ -18,8 +18,8 @@ import CategoryManagerModal from './products/CategoryManagerModal';
 import { ConfirmDialog } from './shared/ConfirmDialog';
 
 export default function Products() {
-  const { db, handleUpdateDb } = useDB();
-  const { activeTenantId } = useApp();
+  const { db, handleUpdateDb, handleSyncFromServer, addNotification } = useDB();
+  const { activeTenantId, handleSwitchTenant } = useApp();
 
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
 
@@ -30,9 +30,122 @@ export default function Products() {
 
   const [activeSubView, setActiveSubView] = useState<'catalog' | 'warehouses' | 'transfers' | 'variants'>('catalog');
 
+  const effectiveTenantId = useMemo(() => {
+    return activeTenantId || activeTenant?.id || db.tenants[0]?.id || 'tenant-demo';
+  }, [activeTenantId, activeTenant, db.tenants]);
+
   const tenantProducts = useMemo(() => {
-    return db.products.filter(p => p.tenantId === activeTenantId);
-  }, [db.products, activeTenantId]);
+    // 1. Match direct sur le tenantId effectif
+    const direct = db.products.filter(p => p.tenantId === effectiveTenantId);
+    // 2. Produits orphelins (créés sans tenantId ou avec tenantId vide)
+    const orphans = db.products.filter(p => !p.tenantId || p.tenantId === '');
+
+    // Si on est sur le tenant principal ou s'il n'y a qu'une seule boutique, fusionner les orphelins
+    if (effectiveTenantId === (db.tenants[0]?.id || 'tenant-demo') || db.tenants.length <= 1) {
+      const combined = [...direct];
+      for (const o of orphans) {
+        if (!combined.some(p => p.id === o.id)) {
+          combined.push(o);
+        }
+      }
+      if (combined.length > 0) return combined;
+    }
+
+    if (direct.length > 0) return direct;
+    if (orphans.length > 0) return orphans;
+    if (db.tenants.length <= 1) return db.products;
+    return [];
+  }, [db.products, effectiveTenantId, db.tenants]);
+
+  // Auto-réparation des produits sans tenantId pour qu'ils soient toujours visibles
+  useEffect(() => {
+    const hasOrphans = db.products.some(p => !p.tenantId || p.tenantId === '');
+    if (hasOrphans && effectiveTenantId && handleUpdateDb) {
+      const healed = db.products.map(p => {
+        if (!p.tenantId || p.tenantId === '') {
+          return { ...p, tenantId: effectiveTenantId };
+        }
+        return p;
+      });
+      handleUpdateDb({ ...db, products: healed });
+    }
+  }, [db.products, effectiveTenantId, handleUpdateDb]);
+
+  const handleReassignAllProductsToCurrentTenant = () => {
+    const targetTenantId = effectiveTenantId;
+    if (!targetTenantId) return;
+    const updated = db.products.map(p => ({ ...p, tenantId: targetTenantId }));
+    handleUpdateDb({ ...db, products: updated });
+    addNotification(`${updated.length} produit(s) rattaché(s) à "${activeTenant?.name || 'votre boutique'}"`, 'success');
+  };
+
+  const handleLoadDemoProducts = () => {
+    const targetTenantId = effectiveTenantId;
+    const sampleProducts: Product[] = [
+      {
+        id: `prod-demo-${Date.now()}-1`,
+        name: 'Smartphone Pro 5G 128Go',
+        sku: 'SKU-PHONE-5G',
+        barcode: '3301234567890',
+        description: 'Écran OLED 6.7 pouces, 8Go RAM, Triple capteur photo 64MP',
+        category: 'Électronique',
+        buyPrice: 350,
+        sellPrice: 599,
+        quantity: 15,
+        alertThreshold: 3,
+        tenantId: targetTenantId,
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: `prod-demo-${Date.now()}-2`,
+        name: 'Ordinateur Portable Ultra 14"',
+        sku: 'SKU-LAPTOP-14',
+        barcode: '3309876543210',
+        description: 'Processeur Core i7, 16Go RAM, SSD 512Go NVMe, Clavier rétroéclairé',
+        category: 'Informatique',
+        buyPrice: 650,
+        sellPrice: 990,
+        quantity: 8,
+        alertThreshold: 2,
+        tenantId: targetTenantId,
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: `prod-demo-${Date.now()}-3`,
+        name: 'Casque Audio Sans Fil Réduction Bruit',
+        sku: 'SKU-AUDIO-ANC',
+        barcode: '3305556667778',
+        description: 'Autonomie 30h, Bluetooth 5.3, Charge rapide USB-C',
+        category: 'Accessoires',
+        buyPrice: 45,
+        sellPrice: 89,
+        quantity: 24,
+        alertThreshold: 5,
+        tenantId: targetTenantId,
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: `prod-demo-${Date.now()}-4`,
+        name: 'T-Shirt Coton Bio Unisexe',
+        sku: 'SKU-TSHIRT-BIO',
+        barcode: '3304443332221',
+        description: '100% Coton peigné biologique 180g/m², Coupe moderne',
+        category: 'Mode',
+        buyPrice: 8,
+        sellPrice: 22.5,
+        quantity: 50,
+        alertThreshold: 10,
+        tenantId: targetTenantId,
+        createdAt: new Date().toISOString()
+      }
+    ];
+
+    handleUpdateDb({
+      ...db,
+      products: [...db.products, ...sampleProducts]
+    });
+    addNotification('4 articles de démonstration ajoutés avec succès !', 'success');
+  };
 
   const tenantWarehouses = useMemo(() => {
     return (db.warehouses || []).filter(w => w.tenantId === activeTenantId);
@@ -233,7 +346,7 @@ export default function Products() {
         quantity: Number(formData.quantity),
         alertThreshold: Number(formData.alertThreshold),
         image: formData.image,
-        tenantId: activeTenantId,
+        tenantId: effectiveTenantId,
         createdAt: new Date().toISOString()
       };
       updatedProducts = [...db.products, newProduct];
@@ -245,7 +358,7 @@ export default function Products() {
       const currentCats = activeTenant?.customCategories || [];
       if (!currentCats.includes(enteredCategory)) {
         updatedTenants = db.tenants.map(t => {
-          if (t.id === activeTenantId) {
+          if (t.id === effectiveTenantId) {
             return {
               ...t,
               customCategories: [...currentCats, enteredCategory]
@@ -276,7 +389,7 @@ export default function Products() {
       id: `w-${Date.now()}`,
       name: warehouseName,
       location: warehouseLocation,
-      tenantId: activeTenantId
+      tenantId: effectiveTenantId
     };
 
     if (handleUpdateDb) {
@@ -352,7 +465,7 @@ export default function Products() {
       quantity: transferQty,
       date: new Date().toISOString().split('T')[0],
       status: 'termine',
-      tenantId: activeTenantId
+      tenantId: effectiveTenantId
     };
 
     if (handleUpdateDb) {
@@ -426,6 +539,13 @@ export default function Products() {
           <ProductsCatalog
             key="catalog"
             tenantProducts={tenantProducts}
+            allProducts={db.products}
+            tenants={db.tenants}
+            activeTenantName={activeTenant?.name || 'Organisation'}
+            onSwitchTenant={handleSwitchTenant}
+            onReassignAllProducts={handleReassignAllProductsToCurrentTenant}
+            onForceCloudSync={handleSyncFromServer}
+            onLoadDemoProducts={handleLoadDemoProducts}
             searchTerm={searchTerm}
             setSearchTerm={setSearchTerm}
             selectedCategory={selectedCategory}

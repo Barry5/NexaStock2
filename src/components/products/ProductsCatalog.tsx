@@ -1,11 +1,18 @@
 import { motion } from 'motion/react';
-import { Plus, Search, Package, AlertTriangle, Barcode, Edit, Trash2, Tag } from 'lucide-react';
-import type { Product } from '../../types';
+import { Plus, Search, Package, AlertTriangle, Barcode, Edit, Trash2, Tag, Building2, RefreshCw, ArrowLeftRight, X } from 'lucide-react';
+import type { Product, Tenant } from '../../types';
 import { filterProducts, formatCurrency, getProductStockState } from '../../services/productCatalog';
 
 interface ProductsCatalogProps {
   key?: string | null;
   tenantProducts: Product[];
+  allProducts?: Product[];
+  tenants?: Tenant[];
+  activeTenantName?: string;
+  onSwitchTenant?: (tenantId: string) => void;
+  onReassignAllProducts?: () => void;
+  onForceCloudSync?: () => void;
+  onLoadDemoProducts?: () => void;
   searchTerm: string;
   setSearchTerm: (v: string) => void;
   selectedCategory: string;
@@ -27,6 +34,13 @@ interface ProductsCatalogProps {
 
 export default function ProductsCatalog({
   tenantProducts,
+  allProducts = [],
+  tenants = [],
+  activeTenantName = 'Votre Boutique',
+  onSwitchTenant,
+  onReassignAllProducts,
+  onForceCloudSync,
+  onLoadDemoProducts,
   searchTerm,
   setSearchTerm,
   selectedCategory,
@@ -229,10 +243,119 @@ export default function ProductsCatalog({
               </div>
             );
           })
+        ) : searchTerm || selectedCategory !== 'Tous' || filterAlerts ? (
+          <div className="col-span-full py-16 text-center bg-gray-900/40 border border-gray-850 rounded-2xl space-y-3">
+            <Package className="w-12 h-12 text-gray-700 mx-auto" />
+            <div>
+              <p className="text-sm font-semibold text-gray-300">Aucun produit ne correspond à votre recherche</p>
+              <p className="text-xs text-gray-500 mt-1">Modifiez vos mots-clés ou réinitialisez les filtres.</p>
+            </div>
+            <button
+              onClick={() => {
+                setSearchTerm('');
+                setSelectedCategory('Tous');
+                setFilterAlerts(false);
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-750 text-gray-300 hover:text-white text-xs rounded-xl font-mono transition"
+            >
+              <X className="w-3.5 h-3.5" /> Réinitialiser les filtres
+            </button>
+          </div>
+        ) : allProducts && allProducts.length > 0 ? (
+          <div className="col-span-full py-10 px-6 bg-gradient-to-b from-blue-950/20 to-gray-900/40 border border-blue-500/30 rounded-2xl text-center space-y-4 shadow-xl">
+            <div className="w-12 h-12 bg-blue-500/10 border border-blue-500/20 rounded-full flex items-center justify-center text-blue-400 mx-auto">
+              <Package className="w-6 h-6" />
+            </div>
+            <div className="max-w-md mx-auto space-y-1.5">
+              <h4 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
+                Aucun produit dans : {activeTenantName}
+              </h4>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                <span className="text-blue-400 font-bold">{allProducts.length} produit(s)</span> existent dans votre système mais sont rattachés à une autre organisation ou ont été créés sur un autre compte/appareil.
+              </p>
+            </div>
+
+            {/* Liste des boutiques avec produits */}
+            {tenants.length > 0 && (
+              <div className="pt-2">
+                <p className="text-[11px] font-mono text-gray-400 uppercase mb-2">Boutiques disponibles :</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {tenants.map(t => {
+                    const count = allProducts.filter(p => p.tenantId === t.id).length;
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => onSwitchTenant?.(t.id)}
+                        className="flex items-center gap-2 px-3 py-2 bg-gray-900 hover:bg-gray-800 border border-gray-750 hover:border-blue-500 rounded-xl text-xs text-white transition font-mono"
+                      >
+                        <Building2 className="w-3.5 h-3.5 text-blue-400" />
+                        <span>{t.name}</span>
+                        <span className="bg-blue-600/30 text-blue-300 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                          {count} prod.
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap justify-center gap-3 pt-3">
+              {onReassignAllProducts && (
+                <button
+                  onClick={onReassignAllProducts}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-2 shadow-lg shadow-blue-500/20"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  Rattacher ces produits à {activeTenantName}
+                </button>
+              )}
+              <button
+                onClick={onOpenCreate}
+                className="px-4 py-2.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 hover:text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Créer un nouveau produit
+              </button>
+            </div>
+          </div>
         ) : (
-          <div className="col-span-full py-16 text-center bg-gray-900/40 border border-gray-850 rounded-2xl">
-            <Package className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-            <p className="text-sm font-semibold text-gray-400">Aucun produit ne correspond à vos filtres</p>
+          <div className="col-span-full py-14 px-6 bg-gray-900/40 border border-gray-850 rounded-2xl text-center space-y-4">
+            <div className="w-12 h-12 bg-gray-800/80 rounded-full flex items-center justify-center text-gray-500 mx-auto">
+              <Package className="w-6 h-6" />
+            </div>
+            <div className="max-w-md mx-auto space-y-1">
+              <h4 className="text-sm font-bold text-white font-mono uppercase">Votre catalogue est actuellement vide</h4>
+              <p className="text-xs text-gray-400">
+                Aucun article n'a été trouvé. Vous pouvez synchroniser le Cloud ou ajouter des produits.
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2.5 pt-2">
+              <button
+                onClick={onOpenCreate}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-2 shadow-lg shadow-blue-500/20"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Ajouter un produit
+              </button>
+              {onForceCloudSync && (
+                <button
+                  onClick={onForceCloudSync}
+                  className="px-4 py-2 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 hover:text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Synchroniser Cloud
+                </button>
+              )}
+              {onLoadDemoProducts && (
+                <button
+                  onClick={onLoadDemoProducts}
+                  className="px-4 py-2 bg-gray-950 hover:bg-gray-900 border border-gray-800 text-gray-400 hover:text-gray-200 text-xs font-mono rounded-xl transition"
+                >
+                  Charger articles démo
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

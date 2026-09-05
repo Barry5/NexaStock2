@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   LayoutDashboard, Package, ShoppingBag, Users, Coins, Sparkles,
   Settings, Cloud, CloudLightning, CloudOff, Bell, Menu, X, Lock,
-  Building, AlertOctagon, AlertTriangle, CreditCard, Database, Shield,
+  Building, Building2, AlertOctagon, AlertTriangle, CreditCard, Database, Shield,
   BarChart3, FileText, LifeBuoy, Award, Check, ShieldCheck, Truck, RefreshCw
 } from 'lucide-react';
 
@@ -209,19 +209,43 @@ function AppShell() {
     <div className="min-h-screen bg-gray-950 text-white font-sans flex antialiased selection:bg-blue-600/30 selection:text-white">
       
       {/* MOBILE HEADER BAR */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4 z-40">
-        <div className="flex items-center gap-3">
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-3 z-40">
+        <div className="flex items-center gap-2 min-w-0">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white"
+            className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white flex-shrink-0"
           >
             <Menu className="w-5 h-5" />
           </button>
-          <span className="text-sm font-bold tracking-wider text-blue-400 uppercase">
-            {activeTenant?.name || "NexaStock"}
-          </span>
+          
+          {activeUser?.role === 'superadmin' && db.tenants.length > 1 ? (
+            <select
+              value={activeTenantId}
+              onChange={(e) => handleSwitchTenant(e.target.value)}
+              className="bg-gray-950 border border-gray-800 text-blue-400 font-bold text-xs rounded-lg px-2 py-1 max-w-[140px] truncate focus:border-blue-500 outline-none"
+              title="Changer de boutique"
+            >
+              {db.tenants.map(t => {
+                const count = db.products.filter(p => p.tenantId === t.id || (!p.tenantId && t.id === db.tenants[0]?.id)).length;
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({count}p)
+                  </option>
+                );
+              })}
+            </select>
+          ) : (
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-bold tracking-wider text-blue-400 uppercase truncate">
+                {activeTenant?.name || "NexaStock"}
+              </span>
+              <span className="text-[9px] text-gray-500 font-mono">
+                {db.products.filter(p => p.tenantId === activeTenantId || (!p.tenantId && (activeTenantId === db.tenants[0]?.id || db.tenants.length <= 1))).length} article(s)
+              </span>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
             onClick={async () => {
               try {
@@ -278,6 +302,42 @@ function AppShell() {
             >
               <X className="w-5 h-5" />
             </button>
+          </div>
+
+          {/* Boutique Active Selector in Sidebar */}
+          <div className="p-3 border-b border-gray-800 bg-gray-950/40 flex-shrink-0">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] font-mono font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Building2 className="w-3 h-3 text-blue-400" />
+                Boutique Active
+              </span>
+              <span className="text-[9px] font-mono bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/20">
+                {db.products.filter(p => p.tenantId === activeTenantId || (!p.tenantId && (activeTenantId === db.tenants[0]?.id || db.tenants.length <= 1))).length} p.
+              </span>
+            </div>
+            {activeUser?.role === 'superadmin' && db.tenants.length > 1 ? (
+              <select
+                value={activeTenantId}
+                onChange={(e) => {
+                  handleSwitchTenant(e.target.value);
+                  setSidebarOpen(false);
+                }}
+                className="w-full bg-gray-900 border border-gray-800 text-xs text-white rounded-lg p-2 font-medium focus:border-blue-500 outline-none"
+              >
+                {db.tenants.map(t => {
+                  const count = db.products.filter(p => p.tenantId === t.id || (!p.tenantId && t.id === db.tenants[0]?.id)).length;
+                  return (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({count} produits)
+                    </option>
+                  );
+                })}
+              </select>
+            ) : (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white truncate">
+                {activeTenant?.name || "Boutique Principale"}
+              </div>
+            )}
           </div>
 
           {/* Navigation Links */}

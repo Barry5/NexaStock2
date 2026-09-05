@@ -55,6 +55,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeUser, activeTenantId]);
 
+  // Résolution automatique de la boutique active : évite d'avoir un activeTenantId vide ou obsolète
+  useEffect(() => {
+    if (db.tenants && db.tenants.length > 0) {
+      const isValid = db.tenants.some(t => t.id === activeTenantId);
+      if (!activeTenantId || !isValid) {
+        // 1. Si utilisateur standard avec tenantId
+        if (activeUser && activeUser.role !== 'superadmin' && activeUser.tenantId && db.tenants.some(t => t.id === activeUser.tenantId)) {
+          setActiveTenantId(activeUser.tenantId);
+          return;
+        }
+        // 2. Préférer en priorité une boutique qui contient déjà des produits enregistrés
+        const tenantWithProducts = db.tenants.find(t => db.products.some(p => p.tenantId === t.id));
+        if (tenantWithProducts) {
+          setActiveTenantId(tenantWithProducts.id);
+          return;
+        }
+        // 3. Sinon première boutique disponible
+        setActiveTenantId(db.tenants[0].id);
+      }
+    }
+  }, [db.tenants, db.products, activeTenantId, activeUser]);
+
   const handleSwitchTenant = useCallback((tenantId: string) => {
     const currentUser = db.users.find(u => u.id === activeUserId);
     if (currentUser?.role !== 'superadmin') {
@@ -88,14 +110,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     resetModuleCache();
     setActiveUserId(userId);
     const user = db.users.find(u => u.id === userId);
-    // Un utilisateur non-superadmin est verrouillé sur son entreprise dédiée
-    const boundTenantId = (user && user.role !== 'superadmin' && user.tenantId)
+
+    let targetTenantId = (user && user.role !== 'superadmin' && user.tenantId)
       ? user.tenantId
-      : (tenantId || user?.tenantId || db.tenants[0]?.id || '');
-    setActiveTenantId(boundTenantId);
+      : (tenantId || user?.tenantId || '');
+
+    // Si aucun tenantId spécifique, rechercher en priorité une boutique contenant des produits
+    if (!targetTenantId || !db.tenants.some(t => t.id === targetTenantId)) {
+      const tenantWithProds = db.tenants.find(t => db.products.some(p => p.tenantId === t.id));
+      targetTenantId = tenantWithProds?.id || (db.tenants[0]?.id || '');
+    }
+
+    setActiveTenantId(targetTenantId);
     setIsLoggedIn(true);
     addNotification('Connexion réussie');
-  }, [db.users, db.tenants, addNotification]);
+  }, [db.users, db.tenants, db.products, addNotification]);
 
   const handleRegisterTenant = useCallback((newTenant: Tenant, newUser: User) => {
     setActiveTenantId(newTenant.id);

@@ -107,11 +107,24 @@ function deepMergeDbState(local: DBState, remoteChanges: Record<string, unknown[
 }
 
 export function DBProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DBState>({
-    tenants: [], users: [], products: [], sales: [],
-    customers: [], suppliers: [], expenses: [], loans: [],
-    warehouses: [], transfers: [], auditLogs: [],
-    subscriptionInvoices: [], variants: [],
+  const [db, setDb] = useState<DBState>(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const raw = window.localStorage.getItem(LOCAL_CACHE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
+            return parsed;
+          }
+        }
+      }
+    } catch { /* ignore synchronous cache load error */ }
+    return {
+      tenants: [], users: [], products: [], sales: [],
+      customers: [], suppliers: [], expenses: [], loans: [],
+      warehouses: [], transfers: [], auditLogs: [],
+      subscriptionInvoices: [], variants: [],
+    };
   });
 
   const [isSyncing, setIsSyncing] = useState(false);
@@ -132,7 +145,17 @@ export function DBProvider({ children }: { children: ReactNode }) {
 
   const persistCache = useCallback((data: DBState) => {
     try {
-      dexieSet(LOCAL_CACHE_KEY, JSON.stringify(data));
+      if (!data || !Array.isArray(data.tenants) || data.tenants.length === 0) return;
+      // Protection anti-perte de données : si la nouvelle donnée a 0 produit mais que la référence locale en possédait, conserver les produits locaux
+      const dataToSave = { ...data };
+      if ((!dataToSave.products || dataToSave.products.length === 0) && (dbRef.current?.products && dbRef.current.products.length > 0)) {
+        dataToSave.products = dbRef.current.products;
+      }
+      const serialized = JSON.stringify(dataToSave);
+      dexieSet(LOCAL_CACHE_KEY, serialized);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(LOCAL_CACHE_KEY, serialized);
+      }
       setLastCacheTime(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch { /* storage error - ignore */ }
   }, []);
@@ -155,7 +178,8 @@ export function DBProvider({ children }: { children: ReactNode }) {
         const arrayFields: (keyof DBState)[] = [
           'products', 'sales', 'customers', 'suppliers', 'expenses', 'loans',
           'warehouses', 'transfers', 'auditLogs', 'invoices', 'deliveryOrders',
-          'payments', 'returns', 'affiliates', 'commissionRules', 'commissionLedger'
+          'payments', 'returns', 'affiliates', 'commissionRules', 'commissionLedger',
+          'subscriptionInvoices', 'variants'
         ];
 
         let hasLocalUnsynced = false;
@@ -307,24 +331,34 @@ export function DBProvider({ children }: { children: ReactNode }) {
   }, [persistCache]);
 
   useEffect(() => {
+    let isMounted = true;
     (async () => {
-      const cached = await dexieGet(LOCAL_CACHE_KEY);
-      if (cached) {
-        try {
+      // 1. Charger immédiatement le cache IndexedDB / Dexie et synchroniser la référence en mémoire
+      try {
+        const cached = await dexieGet(LOCAL_CACHE_KEY);
+        if (cached && isMounted) {
           const parsed: DBState = JSON.parse(cached);
           if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
             setDb(parsed);
+            dbRef.current = parsed;
           }
-        } catch { /* invalid cache */ }
+        }
+      } catch (err) {
+        console.warn('[CACHE] Erreur lecture cache IndexedDB initial:', err);
+      }
+
+      // 2. Ensuite lancer le chargement serveur avec la certitude que dbRef.current détient l'état local
+      if (isMounted) {
+        await loadStateFromServer();
       }
     })();
-    loadStateFromServer();
 
     const handleOnline = () => { setIsOnline(true); setSyncError(false); };
     const handleOffline = () => { setIsOnline(false); };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => {
+      isMounted = false;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
