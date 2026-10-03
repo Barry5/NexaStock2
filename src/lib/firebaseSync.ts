@@ -1,31 +1,47 @@
+/**
+ * Accès Firestore : écouteurs bornés à la boutique et envoi des opérations de l'outbox.
+ *
+ * Phase 1 / 2 de l'audit :
+ *  - plus aucun chargement de « toutes les collections de toutes les boutiques » (PERF-01) :
+ *    un utilisateur de boutique n'écoute que ses documents (`where('tenantId', '==', …)`),
+ *    ce qu'imposent aussi les règles Firestore (SEC-01) ;
+ *  - plus de création de comptes / boutiques par défaut, ni d'identifiants codés en dur (SEC-03) ;
+ *  - chaque opération est écrite dans son propre lot, champ par champ (`mergeFields`),
+ *    avec `serverTimestamp()`, `version` incrémentée, auteur et poste (traçabilité) ;
+ *  - les opérations contenant des incréments créent `operations/{opId}` dans le même lot :
+ *    un renvoi est refusé par les règles, l'incrément n'est donc jamais appliqué deux fois ;
+ *  - chaque variation de stock produit un mouvement `stockMovements/{opId}` (journal append-only).
+ */
 import {
   collection,
   doc,
-  getDocs,
   getDoc,
   setDoc,
-  deleteDoc,
   writeBatch,
   query,
   where,
   onSnapshot,
+  serverTimestamp,
+  increment,
+  arrayUnion,
   Timestamp,
-  serverTimestamp
+  FieldPath,
+  type DocumentData,
+  type Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import type { DBState, Tenant, User, Product, Sale, Customer, Supplier, Expense, Loan, PricingPlan, GlobalSaaSSettings } from '../types';
-import { DEFAULT_PRICING_PLANS, DEFAULT_SAAS_SETTINGS, LOCAL_CACHE_KEY } from '../constants';
+import type { GlobalSaaSSettings, PricingPlan } from '../types';
 import { logSyncEvent } from './syncLogger';
-import { getItem as dexieGet } from './storage';
+import { CLIENT_ARRAY_FIELDS } from '../shared/syncMappings';
+import { changeHasIncrement, type FieldOp, type RecordChange } from '../sync/changeEngine';
+import type { OutboxEntry } from './syncQueue';
 
 // Normalisation des noms de tables SQL/client vers les collections Firestore cibles
 export function normalizeFirestoreCollection(table: string): { collectionName: string; docId?: string; isSystemDoc?: boolean } {
-  if (table === 'global_saas_settings' || table === 'globalSaaSSettings' || table === 'saas_settings') {
+  if (table === 'global_saas_settings' || table === 'globalSaaSSettings' || table === 'saas_settings' || table === 'system') {
     return { collectionName: 'system', docId: 'globalSaaSSettings', isSystemDoc: true };
   }
-  if (table === 'pricing_plans' || table === 'pricingPlans') {
-    return { collectionName: 'pricingPlans' };
-  }
+  if (table === 'pricing_plans' || table === 'pricingPlans') return { collectionName: 'pricingPlans' };
   if (table === 'stock_transfers' || table === 'transfers') return { collectionName: 'transfers' };
   if (table === 'audit_logs' || table === 'auditLogs') return { collectionName: 'auditLogs' };
   if (table === 'subscription_invoices' || table === 'subscriptionInvoices') return { collectionName: 'subscriptionInvoices' };
@@ -44,17 +60,18 @@ export function normalizeFirestoreCollection(table: string): { collectionName: s
   return { collectionName: table };
 }
 
-// Liste de toutes les collections Firestore synchronisées
-export const FIRESTORE_COLLECTIONS = [
-  'tenants', 'users', 'products', 'sales', 'customers',
-  'suppliers', 'expenses', 'loans', 'warehouses', 'transfers',
-  'auditLogs', 'subscriptionInvoices', 'variants', 'pricingPlans',
-  'subscriptionPayments', 'globalSaaSSettings', 'invoices',
-  'deliveryOrders', 'payments', 'returns', 'invoiceAuditLogs',
-  'deliveryNoteAudit', 'affiliates', 'commissionRules',
-  'commissionLedger', 'commissionPayments', 'commissionAudit',
-  'moduleDefinitions', 'planModules', 'tenantModules'
-] as const;
+/** Champs du DBState synchronisés avec une collection Firestore du même nom. */
+export const SYNCED_FIELDS: readonly string[] = CLIENT_ARRAY_FIELDS;
+
+/** Collections lisibles par tout utilisateur connecté (catalogue SaaS). */
+const GLOBAL_COLLECTIONS = new Set(['pricingPlans', 'moduleDefinitions', 'planModules']);
+
+export interface SyncScope {
+  uid: string;
+  userId: string;
+  tenantId: string | null;
+  isSuperAdmin: boolean;
+}
 
 export interface FirestoreSyncResult {
   pushed: number;
@@ -62,8 +79,194 @@ export interface FirestoreSyncResult {
   errors: string[];
 }
 
+/** Convertit récursivement les Timestamp Firestore en chaînes ISO (état client sérialisable). */
+export function normalizeFirestoreValue(value: unknown): unknown {
+  if (value instanceof Timestamp) return value.toDate().toISOString();
+  if (Array.isArray(value)) return value.map(normalizeFirestoreValue);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = normalizeFirestoreValue(v);
+    return out;
+  }
+  return value;
+}
+
+function mapDoc(id: string, data: DocumentData): Record<string, unknown> {
+  return { ...(normalizeFirestoreValue(data) as Record<string, unknown>), id };
+}
+
+export interface CollectionSnapshot {
+  field: string;
+  records: Record<string, unknown>[];
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+}
+
+export interface SubscriptionHandlers {
+  onCollection: (snap: CollectionSnapshot) => void;
+  onSettings: (settings: GlobalSaaSSettings & { saasCurrency?: string; currency?: string }) => void;
+  onError: (field: string, error: { code?: string; message?: string }) => void;
+}
+
 /**
- * Sauvegarde directe des coordonnées de règlement & devises SaaS vers Firestore
+ * Abonne l'application aux collections de SA boutique (ou à tout, pour le super admin).
+ * Le premier instantané vient du cache persistant (démarrage hors ligne), puis du serveur.
+ */
+export function subscribeScopedCollections(scope: SyncScope, handlers: SubscriptionHandlers): () => void {
+  const unsubscribers: Unsubscribe[] = [];
+
+  const emit = (field: string, docs: { id: string; data: () => DocumentData }[], fromCache: boolean, hasPendingWrites: boolean) => {
+    const records = docs
+      .map(d => mapDoc(d.id, d.data()))
+      .filter(r => !r.deletedAt); // suppressions logiques : jamais affichées
+    handlers.onCollection({ field, records, fromCache, hasPendingWrites });
+  };
+
+  const onErr = (field: string) => (err: { code?: string; message?: string }) => handlers.onError(field, err);
+
+  // Paramètres SaaS globaux (lecture pour tout utilisateur connecté)
+  unsubscribers.push(
+    onSnapshot(doc(db, 'system', 'globalSaaSSettings'), snap => {
+      if (snap.exists()) handlers.onSettings(normalizeFirestoreValue(snap.data()) as GlobalSaaSSettings);
+    }, onErr('system'))
+  );
+
+  for (const field of SYNCED_FIELDS) {
+    const colName = normalizeFirestoreCollection(field).collectionName;
+    if (colName === 'system') continue;
+
+    if (scope.isSuperAdmin || GLOBAL_COLLECTIONS.has(colName)) {
+      unsubscribers.push(onSnapshot(collection(db, colName), { includeMetadataChanges: false }, snap => {
+        emit(field, snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+      }, onErr(field)));
+      continue;
+    }
+
+    if (!scope.tenantId) continue; // utilisateur sans boutique : rien d'autre à lire
+
+    if (colName === 'tenants') {
+      unsubscribers.push(onSnapshot(doc(db, 'tenants', scope.tenantId), snap => {
+        const docs = snap.exists() ? [{ id: snap.id, data: () => snap.data() as DocumentData }] : [];
+        emit(field, docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+      }, onErr(field)));
+      continue;
+    }
+
+    const q = query(collection(db, colName), where('tenantId', '==', scope.tenantId));
+    unsubscribers.push(onSnapshot(q, snap => {
+      emit(field, snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+    }, onErr(field)));
+  }
+
+  return () => {
+    for (const unsub of unsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+  };
+}
+
+function toFirestoreValue(op: FieldOp): unknown {
+  switch (op.kind) {
+    case 'set': return op.value === undefined ? null : op.value;
+    case 'increment': return increment(op.by);
+    case 'arrayUnion': return arrayUnion(...op.values);
+    case 'serverTimestamp': return serverTimestamp();
+  }
+}
+
+function targetRef(change: RecordChange) {
+  const normalized = normalizeFirestoreCollection(change.table);
+  if (normalized.isSystemDoc) return doc(db, 'system', 'globalSaaSSettings');
+  return doc(db, normalized.collectionName, change.recordId);
+}
+
+/**
+ * Écrit UNE opération de l'outbox dans son propre lot.
+ * La promesse se résout à l'accusé de réception du serveur (elle reste en attente hors ligne,
+ * l'écriture étant conservée par le SDK dans son cache persistant).
+ */
+export function commitOutboxEntry(entry: OutboxEntry, actor: { uid: string; userId: string | null }): Promise<void> {
+  const change = entry.change;
+  const ref = targetRef(change);
+  const data: Record<string, unknown> = {};
+  for (const [key, op] of Object.entries(change.fields)) data[key] = toFirestoreValue(op);
+
+  const isGlobal = normalizeFirestoreCollection(change.table).isSystemDoc
+    || ['pricingPlans', 'moduleDefinitions', 'planModules', 'tenants'].includes(normalizeFirestoreCollection(change.table).collectionName);
+  if (!isGlobal && change.tenantId && data.tenantId === undefined) data.tenantId = change.tenantId;
+
+  if (change.operation === 'SOFT_DELETE') data.deletedBy = actor.userId ?? actor.uid;
+  data.version = change.operation === 'CREATE' ? 1 : increment(1);
+  if (change.operation === 'CREATE') data.serverCreatedAt = serverTimestamp();
+  data.updatedAt = serverTimestamp();
+  data.updatedBy = actor.userId ?? actor.uid;
+  data.deviceId = entry.deviceId;
+  data.lastOperationId = entry.opId;
+
+  const batch = writeBatch(db);
+  batch.set(ref, data, { mergeFields: Object.keys(data).map(k => new FieldPath(k)) });
+
+  if (changeHasIncrement(change)) {
+    // Inbox côté serveur : les règles refusent la réécriture d'une opération existante.
+    batch.set(doc(db, 'operations', entry.opId), {
+      tenantId: change.tenantId ?? null,
+      table: change.table,
+      recordId: change.recordId,
+      userId: actor.userId,
+      uid: actor.uid,
+      deviceId: entry.deviceId,
+      createdAt: serverTimestamp(),
+      clientCreatedAt: entry.createdAt,
+    });
+    const qty = change.fields.quantity;
+    if (change.table === 'products' && qty && qty.kind === 'increment') {
+      batch.set(doc(db, 'stockMovements', entry.opId), {
+        tenantId: change.tenantId ?? null,
+        productId: change.recordId,
+        delta: qty.by,
+        opId: entry.opId,
+        userId: actor.userId,
+        deviceId: entry.deviceId,
+        createdAt: serverTimestamp(),
+        clientCreatedAt: entry.createdAt,
+      });
+    }
+  }
+  return batch.commit();
+}
+
+/** Une opération à incrément a-t-elle déjà été appliquée (renvoi après coupure) ? */
+export async function isOperationApplied(opId: string): Promise<boolean> {
+  try {
+    const snap = await getDoc(doc(db, 'operations', opId));
+    return snap.exists();
+  } catch {
+    return false;
+  }
+}
+
+export type ErrorClass = 'transient' | 'permanent' | 'duplicate-candidate';
+
+/** Classement des erreurs Firestore pour décider : nouvel essai ou file morte. */
+export function classifyFirestoreError(err: unknown): ErrorClass {
+  const code = (err as { code?: string })?.code || '';
+  switch (code) {
+    case 'invalid-argument':
+    case 'out-of-range':
+    case 'unimplemented':
+    case 'data-loss':
+    case 'not-found':
+      return 'permanent';
+    case 'permission-denied':
+    case 'already-exists':
+      return 'duplicate-candidate';
+    default:
+      return 'transient';
+  }
+}
+
+/**
+ * Sauvegarde directe des coordonnées de règlement & devises SaaS vers Firestore (super admin).
  */
 export async function saveGlobalSaaSSettingsToFirestore(
   settings: Partial<GlobalSaaSSettings>,
@@ -71,15 +274,13 @@ export async function saveGlobalSaaSSettingsToFirestore(
 ): Promise<void> {
   const start = Date.now();
   try {
-    const effectiveCurrency = saasCurrency || settings.saasCurrency || (settings as any).currency || 'EUR';
-    const payload = {
+    const effectiveCurrency = saasCurrency || settings.saasCurrency || (settings as { currency?: string }).currency || 'EUR';
+    await setDoc(doc(db, 'system', 'globalSaaSSettings'), {
       ...settings,
       saasCurrency: effectiveCurrency,
       currency: effectiveCurrency,
-      updatedAt: new Date().toISOString()
-    };
-    await setDoc(doc(db, 'system', 'globalSaaSSettings'), payload, { merge: true });
-    
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
     logSyncEvent({
       tenantId: 'global_system',
       tenantName: 'Configuration SaaS Root',
@@ -88,10 +289,10 @@ export async function saveGlobalSaaSSettingsToFirestore(
       status: 'SUCCESS',
       recordsCount: 1,
       durationMs: Date.now() - start,
-      details: `Coordonnées bancaires, Orange Money (${settings.orangeMoneyNumber || 'N/A'}) et Forfaits synchronisés avec succès`,
-      source: 'Firestore Cloud'
+      details: 'Paramètres SaaS enregistrés',
+      source: 'Firestore Cloud',
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     logSyncEvent({
       tenantId: 'global_system',
       tenantName: 'Configuration SaaS Root',
@@ -100,30 +301,24 @@ export async function saveGlobalSaaSSettingsToFirestore(
       status: 'ERROR',
       recordsCount: 1,
       durationMs: Date.now() - start,
-      errorMessage: err?.message || 'Erreur inconnue lors de l\'enregistrement des paramètres SaaS',
-      details: 'Échec de synchronisation Firestore de system/globalSaaSSettings',
-      source: 'Firestore Cloud'
+      errorMessage: (err as Error)?.message || 'Erreur inconnue lors de l\'enregistrement des paramètres SaaS',
+      source: 'Firestore Cloud',
     });
     throw err;
   }
 }
 
 /**
- * Sauvegarde directe de la grille des forfaits tarifaires vers Firestore
+ * Sauvegarde directe de la grille des forfaits tarifaires vers Firestore (super admin).
  */
 export async function savePricingPlansToFirestore(plans: PricingPlan[]): Promise<void> {
   const start = Date.now();
   try {
     const batch = writeBatch(db);
     for (const plan of plans) {
-      const planRef = doc(db, 'pricingPlans', plan.id);
-      batch.set(planRef, {
-        ...plan,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      batch.set(doc(db, 'pricingPlans', plan.id), { ...plan, updatedAt: serverTimestamp() }, { merge: true });
     }
     await batch.commit();
-
     logSyncEvent({
       tenantId: 'global_system',
       tenantName: 'Grille des Forfaits',
@@ -132,10 +327,10 @@ export async function savePricingPlansToFirestore(plans: PricingPlan[]): Promise
       status: 'SUCCESS',
       recordsCount: plans.length,
       durationMs: Date.now() - start,
-      details: `${plans.length} forfaits synchronisés (${plans.map(p => p.name).join(', ')})`,
-      source: 'Firestore Cloud'
+      details: `${plans.length} forfaits enregistrés`,
+      source: 'Firestore Cloud',
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     logSyncEvent({
       tenantId: 'global_system',
       tenantName: 'Grille des Forfaits',
@@ -144,431 +339,9 @@ export async function savePricingPlansToFirestore(plans: PricingPlan[]): Promise
       status: 'ERROR',
       recordsCount: plans.length,
       durationMs: Date.now() - start,
-      errorMessage: err?.message || 'Erreur lors de la synchronisation des forfaits dans Firestore',
-      source: 'Firestore Cloud'
+      errorMessage: (err as Error)?.message || 'Erreur lors de l\'enregistrement des forfaits',
+      source: 'Firestore Cloud',
     });
     throw err;
   }
 }
-
-/**
- * Charge l'état initial complet depuis Firestore ou pré-remplit les données par défaut
- */
-export async function loadStateFromFirestore(tenantId?: string | null): Promise<DBState> {
-  const start = Date.now();
-  const result: Partial<DBState> = {
-    tenants: [],
-    users: [],
-    products: [],
-    sales: [],
-    customers: [],
-    suppliers: [],
-    expenses: [],
-    loans: [],
-    warehouses: [],
-    transfers: [],
-    auditLogs: [],
-    subscriptionInvoices: [],
-    variants: [],
-    pricingPlans: [],
-    subscriptionPayments: [],
-    invoices: [],
-    deliveryOrders: [],
-    payments: [],
-    returns: [],
-    invoiceAuditLogs: [],
-    deliveryNoteAudit: [],
-    affiliates: [],
-    commissionRules: [],
-    commissionLedger: [],
-    commissionPayments: [],
-    commissionAudit: [],
-    moduleDefinitions: [],
-    planModules: [],
-    tenantModules: [],
-  };
-
-  try {
-    // 1. Charger les settings globaux
-    const settingsDoc = await getDoc(doc(db, 'system', 'globalSaaSSettings'));
-    if (settingsDoc.exists()) {
-      const sData = settingsDoc.data() as GlobalSaaSSettings & { saasCurrency?: string; currency?: string };
-      result.globalSaaSSettings = sData;
-      result.saasCurrency = sData.saasCurrency || sData.currency || DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR';
-    } else {
-      result.globalSaaSSettings = DEFAULT_SAAS_SETTINGS;
-      result.saasCurrency = DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR';
-      await setDoc(doc(db, 'system', 'globalSaaSSettings'), {
-        ...DEFAULT_SAAS_SETTINGS,
-        saasCurrency: DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR',
-        currency: DEFAULT_SAAS_SETTINGS.saasCurrency || 'EUR',
-        updatedAt: new Date().toISOString()
-      }).catch(console.warn);
-    }
-
-    // 2. Charger les forfaits
-    const plansSnap = await getDocs(collection(db, 'pricingPlans'));
-    if (!plansSnap.empty) {
-      result.pricingPlans = plansSnap.docs.map(d => ({ id: d.id, ...d.data() } as PricingPlan));
-    } else {
-      result.pricingPlans = DEFAULT_PRICING_PLANS as PricingPlan[];
-      for (const plan of DEFAULT_PRICING_PLANS) {
-        await setDoc(doc(db, 'pricingPlans', plan.id), plan).catch(console.warn);
-      }
-    }
-
-    // 3. Charger les utilisateurs
-    const usersSnap = await getDocs(collection(db, 'users'));
-    if (!usersSnap.empty) {
-      result.users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as User));
-    } else {
-      const defaultSuperAdmin: User = {
-        id: 'u-1',
-        name: 'Barry Hassim',
-        email: 'barry.hassim@gmail.com',
-        role: 'superadmin',
-        tenantId: null,
-        active: true,
-        password: 'Nexa2026!'
-      };
-      result.users = [defaultSuperAdmin];
-      await setDoc(doc(db, 'users', 'u-1'), defaultSuperAdmin).catch(console.warn);
-    }
-
-    // 4. Charger les tenants
-    const tenantsSnap = await getDocs(collection(db, 'tenants'));
-    if (!tenantsSnap.empty) {
-      result.tenants = tenantsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Tenant));
-    } else {
-      const defaultTenant: Tenant = {
-        id: 'tenant-demo',
-        name: 'Boutique Principale',
-        description: 'Boutique pilote NexaStock',
-        plan: 'Standard',
-        logo: '',
-        address: 'Centre-ville, Conakry',
-        phone: '+224 620 00 00 00',
-        currency: 'GNF',
-        createdAt: new Date().toISOString(),
-        subscriptionStatus: 'ACTIVE'
-      };
-      result.tenants = [defaultTenant];
-      await setDoc(doc(db, 'tenants', 'tenant-demo'), defaultTenant).catch(console.warn);
-    }
-
-    // 5. Charger les autres collections métiers
-    const collectionsToFetch: (keyof DBState)[] = [
-      'products', 'sales', 'customers', 'suppliers', 'expenses', 'loans',
-      'warehouses', 'transfers', 'auditLogs', 'subscriptionInvoices', 'variants',
-      'subscriptionPayments', 'invoices', 'deliveryOrders', 'payments', 'returns',
-      'invoiceAuditLogs', 'deliveryNoteAudit', 'affiliates', 'commissionRules',
-      'commissionLedger', 'commissionPayments', 'commissionAudit',
-      'moduleDefinitions', 'planModules', 'tenantModules'
-    ];
-
-    let totalLoadedCount = 0;
-    await Promise.all(
-      collectionsToFetch.map(async (key) => {
-        try {
-          const colRef = collection(db, key);
-          const snap = await getDocs(colRef);
-          if (!snap.empty) {
-            const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            (result as any)[key] = items;
-            totalLoadedCount += items.length;
-          }
-        } catch (e: any) {
-          console.warn(`[FIRESTORE] Erreur lecture collection ${key}:`, e);
-        }
-      })
-    );
-
-    logSyncEvent({
-      tenantId: tenantId || 'global_system',
-      tenantName: tenantId ? `Tenant ${tenantId}` : 'Système SaaS Root',
-      collection: 'ALL_COLLECTIONS',
-      operation: 'PULL',
-      status: 'SUCCESS',
-      recordsCount: totalLoadedCount,
-      durationMs: Date.now() - start,
-      details: `Chargement complet Firestore : ${result.tenants?.length} tenants, ${result.pricingPlans?.length} forfaits, ${totalLoadedCount} données synchronisées`,
-      source: 'Firestore Cloud'
-    });
-
-    return result as DBState;
-  } catch (err: any) {
-    const isOffline =
-      err?.message?.includes('offline') ||
-      err?.message?.includes('unavailable') ||
-      err?.message?.includes('permission-denied') ||
-      err?.code === 'unavailable' ||
-      err?.code === 'permission-denied';
-
-    logSyncEvent({
-      tenantId: tenantId || 'global_system',
-      tenantName: 'Système SaaS Root',
-      collection: 'ALL_COLLECTIONS',
-      operation: 'PULL',
-      status: isOffline ? 'PENDING' : 'ERROR',
-      recordsCount: 0,
-      durationMs: Date.now() - start,
-      errorMessage: err?.message || 'Erreur lors du chargement Firestore',
-      source: 'Firestore Cloud'
-    });
-
-    if (isOffline) {
-      console.info('[FIRESTORE] Mode hors-ligne actif (Firestore inaccessible ou client hors-ligne). Basculement vers le stockage local.');
-    } else {
-      console.warn('[FIRESTORE] Erreur chargement initial Firestore:', err);
-    }
-
-    // Récupérer le cache local pour continuer sans interruption
-    try {
-      const cached = await dexieGet(LOCAL_CACHE_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached) as DBState;
-        if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
-          return parsed;
-        }
-      }
-    } catch { /* ignore cache parse error */ }
-
-    // Si aucun cache valide, assurer un état initial complet avec compte superadmin et boutique démo
-    if (!result.users || result.users.length === 0) {
-      result.users = [{
-        id: 'u-1',
-        name: 'Barry Hassim',
-        email: 'barry.hassim@gmail.com',
-        role: 'superadmin',
-        tenantId: null,
-        active: true,
-        password: 'Nexa2026!'
-      }];
-    }
-    if (!result.tenants || result.tenants.length === 0) {
-      result.tenants = [{
-        id: 'tenant-demo',
-        name: 'Boutique Principale',
-        description: 'Boutique pilote NexaStock',
-        plan: 'Standard',
-        logo: '',
-        address: 'Centre-ville, Conakry',
-        phone: '+224 620 00 00 00',
-        currency: 'GNF',
-        createdAt: new Date().toISOString(),
-        subscriptionStatus: 'ACTIVE'
-      }];
-    }
-    return result as DBState;
-  }
-}
-
-/**
- * Sauvegarde un changement unitaire (CREATE, UPDATE, DELETE) vers Firestore
- */
-export async function pushChangeToFirestore(
-  table: string,
-  recordId: string,
-  operation: 'CREATE' | 'UPDATE' | 'DELETE',
-  data: Record<string, unknown>
-): Promise<void> {
-  const start = Date.now();
-  const normalized = normalizeFirestoreCollection(table);
-  const collectionName = normalized.collectionName;
-  const docId = normalized.docId || recordId;
-  const docRef = doc(db, collectionName, docId);
-
-  const tenantId = (data?.tenantId as string) || 'global_system';
-
-  try {
-    if (operation === 'DELETE') {
-      await deleteDoc(docRef);
-    } else {
-      const cleanData: Record<string, any> = {};
-      for (const [k, v] of Object.entries(data || {})) {
-        if (v !== undefined) {
-          cleanData[k] = v;
-        }
-      }
-      cleanData.updatedAt = new Date().toISOString();
-      await setDoc(docRef, cleanData, { merge: true });
-    }
-
-    logSyncEvent({
-      tenantId,
-      tenantName: tenantId === 'global_system' ? 'Système SaaS' : `Tenant ${tenantId}`,
-      collection: collectionName,
-      operation: operation === 'DELETE' ? 'DELETE' : operation === 'CREATE' ? 'CREATE' : 'UPDATE',
-      status: 'SUCCESS',
-      recordsCount: 1,
-      durationMs: Date.now() - start,
-      details: `${operation} sur ${collectionName}/${docId}`,
-      source: 'Firestore Cloud'
-    });
-  } catch (err: any) {
-    logSyncEvent({
-      tenantId,
-      tenantName: tenantId === 'global_system' ? 'Système SaaS' : `Tenant ${tenantId}`,
-      collection: collectionName,
-      operation: 'PUSH',
-      status: 'ERROR',
-      recordsCount: 1,
-      durationMs: Date.now() - start,
-      errorMessage: err?.message || 'Erreur Firestore pushChangeToFirestore',
-      details: `Échec ${operation} sur ${collectionName}/${docId}`,
-      source: 'Firestore Cloud'
-    });
-    throw err;
-  }
-}
-
-/**
- * Écriture en lot (Batch) vers Firestore pour synchroniser les deltas en attente
- */
-export async function pushBatchToFirestore(
-  changes: Array<{ table: string; recordId: string; operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: Record<string, unknown> }>
-): Promise<{ success: number; errors: string[] }> {
-  if (changes.length === 0) return { success: 0, errors: [] };
-
-  const start = Date.now();
-  const batch = writeBatch(db);
-  const errors: string[] = [];
-  let count = 0;
-
-  for (const c of changes) {
-    try {
-      const normalized = normalizeFirestoreCollection(c.table);
-      const collectionName = normalized.collectionName;
-      const docId = normalized.docId || c.recordId;
-      const docRef = doc(db, collectionName, docId);
-
-      if (c.operation === 'DELETE') {
-        batch.delete(docRef);
-      } else {
-        const cleanData: Record<string, any> = {};
-        for (const [k, v] of Object.entries(c.data || {})) {
-          if (v !== undefined) cleanData[k] = v;
-        }
-        cleanData.updatedAt = new Date().toISOString();
-        batch.set(docRef, cleanData, { merge: true });
-      }
-      count++;
-    } catch (e: any) {
-      errors.push(`${c.table}/${c.recordId}: ${e?.message || e}`);
-    }
-  }
-
-  try {
-    await batch.commit();
-
-    logSyncEvent({
-      tenantId: 'global_system',
-      tenantName: 'Synchronisation par Lot',
-      collection: 'BATCH_COLLECTIONS',
-      operation: 'BATCH',
-      status: errors.length > 0 ? 'ERROR' : 'SUCCESS',
-      recordsCount: count,
-      durationMs: Date.now() - start,
-      details: `Batch de ${count} modification(s) commitées dans Firestore.`,
-      errorMessage: errors.length > 0 ? errors.join('; ') : undefined,
-      source: 'Firestore Cloud'
-    });
-
-    return { success: count, errors };
-  } catch (commitErr: any) {
-    const errorMsg = commitErr?.message || 'Erreur inconnue de commit Firestore batch';
-    const isOffline =
-      commitErr?.message?.includes('offline') ||
-      commitErr?.message?.includes('unavailable') ||
-      commitErr?.message?.includes('permission-denied') ||
-      commitErr?.code === 'unavailable' ||
-      commitErr?.code === 'permission-denied';
-
-    if (isOffline) {
-      console.info('[FIRESTORE] Synchronisation cloud différée : modifications conservées dans la file locale hors-ligne.');
-    } else {
-      console.warn('[FIRESTORE] Erreur commit batch:', commitErr);
-    }
-
-    logSyncEvent({
-      tenantId: 'global_system',
-      tenantName: 'Synchronisation par Lot',
-      collection: 'BATCH_COLLECTIONS',
-      operation: 'BATCH',
-      status: isOffline ? 'PENDING' : 'ERROR',
-      recordsCount: count,
-      durationMs: Date.now() - start,
-      errorMessage: errorMsg,
-      source: 'Firestore Cloud'
-    });
-
-    return { success: 0, errors: [errorMsg] };
-  }
-}
-
-/**
- * Abonne l'application aux changements Firestore en temps réel
- */
-export function subscribeToFirestoreChanges(
-  onUpdate: (updatedCollections: Partial<DBState>) => void
-): () => void {
-  const unsubscribers: (() => void)[] = [];
-
-  // Écouteur sur les paramètres globaux (system/globalSaaSSettings)
-  try {
-    const settingsDocRef = doc(db, 'system', 'globalSaaSSettings');
-    const unsubSettings = onSnapshot(settingsDocRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as GlobalSaaSSettings & { saasCurrency?: string; currency?: string };
-        const detectedCurrency = data.saasCurrency || data.currency;
-        onUpdate({
-          globalSaaSSettings: data,
-          ...(detectedCurrency ? { saasCurrency: detectedCurrency } : {})
-        });
-      }
-    }, (err) => {
-      if (err?.message?.includes('offline') || err?.message?.includes('permission-denied') || err?.code === 'unavailable') {
-        // En attente de reconnexion hors-ligne
-      } else {
-        console.warn('[FIRESTORE] Listener globalSaaSSettings error:', err);
-      }
-    });
-    unsubscribers.push(unsubSettings);
-  } catch (e) {
-    console.warn('[FIRESTORE] Erreur abonnement system/globalSaaSSettings:', e);
-  }
-
-  const collectionsToListen: (keyof DBState)[] = [
-    'tenants', 'users', 'products', 'sales', 'customers',
-    'suppliers', 'expenses', 'loans', 'invoices', 'pricingPlans',
-    'subscriptionPayments', 'planModules', 'tenantModules'
-  ];
-
-  collectionsToListen.forEach((colName) => {
-    try {
-      const q = collection(db, colName);
-      const unsub = onSnapshot(q, (snapshot) => {
-        if (!snapshot.empty) {
-          const items = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-          onUpdate({ [colName]: items });
-        }
-      }, (err) => {
-        if (err?.message?.includes('offline') || err?.message?.includes('permission-denied') || err?.code === 'unavailable') {
-          // En attente de reconnexion hors-ligne
-        } else {
-          console.warn(`[FIRESTORE] Listener ${colName} error:`, err);
-        }
-      });
-      unsubscribers.push(unsub);
-    } catch (e) {
-      console.warn(`[FIRESTORE] Erreur souscription ${colName}:`, e);
-    }
-  });
-
-  return () => {
-    unsubscribers.forEach(unsub => {
-      try { unsub(); } catch { /* ignore */ }
-    });
-  };
-}
-

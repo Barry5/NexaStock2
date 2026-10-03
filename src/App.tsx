@@ -9,7 +9,9 @@ import {
 
 import type { TabType, DBState, Sale, Product, Customer, Tenant, User, SubscriptionPlan, SubscriptionPayment } from './types';
 
-import { DBProvider, useDB, AppProvider, useApp } from './context';
+import { DBProvider, useDB, AppProvider, useApp, AuthProvider, useAuth } from './context';
+import { changeOwnPassword, authErrorMessage, MIN_PASSWORD_LENGTH } from './lib/authService';
+import { newId } from './lib/ids';
 import { LOCAL_CACHE_KEY, DEFAULT_PRICING_PLANS, AUTH_TOKEN_KEY } from './constants';
 import { formatCurrency } from './utils';
 import { useAvailableModules, resetModuleCache } from './hooks/useModules';
@@ -45,8 +47,9 @@ function AppShell() {
     activeUserId, setActiveUserId, currentTab, setCurrentTab,
     saasSubTab, setSaasSubTab, sidebarOpen, setSidebarOpen,
     activeTenant, activeUser, handleSwitchTenant, handleSwitchUser,
-    handleUpdateTenantPlan, handleLoginSuccess, handleRegisterTenant
+    handleUpdateTenantPlan, handleLoginSuccess, handleRegisterTenant, logout
   } = useApp();
+  const { authState } = useAuth();
 
   // Lock screen payment declaration states
   const [showLockPaymentForm, setShowLockPaymentForm] = useState(false);
@@ -80,6 +83,11 @@ function AppShell() {
     }
   }, [isLoggedIn, activeTenant, activeUser]);
 
+  // Première connexion d'un compte créé par un administrateur : changement de mot de passe imposé.
+  useEffect(() => {
+    if (isLoggedIn && activeUser?.firstLoginReset) setShowSecurePasswordModal(true);
+  }, [isLoggedIn, activeUser?.firstLoginReset]);
+
   // Auto-dismiss toast notifications after 6s
   const [dismissedToasts, setDismissedToasts] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -104,39 +112,31 @@ function AppShell() {
            activeTenant.description?.includes('[SUSPENDU]');
   }, [activeTenant]);
 
-  const handlePaySuspension = useCallback(() => {
-    if (!activeTenantId) return;
-    const updatedTenants = db.tenants.map(t => {
-      if (t.id === activeTenantId) {
-        return { ...t, subscriptionStatus: 'ACTIVE' as const, description: t.description.replace(' [SUSPENDU]', '') };
-      }
-      return t;
-    });
-    handleUpdateDb({ ...db, tenants: updatedTenants });
-    addNotification("Abonnement régularisé provisoirement !");
-  }, [activeTenantId, db, handleUpdateDb, addNotification]);
-
-  const handleSaveSecurePassword = useCallback((e: FormEvent) => {
+  const handleSaveSecurePassword = useCallback(async (e: FormEvent) => {
     e.preventDefault();
-    if (securePassword.length < 4) {
-      setSecurePasswordError("Le mot de passe doit comporter au moins 4 caractères.");
+    if (securePassword.length < MIN_PASSWORD_LENGTH) {
+      setSecurePasswordError(`Le mot de passe doit comporter au moins ${MIN_PASSWORD_LENGTH} caractères.`);
       return;
     }
     if (securePassword !== securePasswordConfirm) {
       setSecurePasswordError("Les deux mots de passe ne correspondent pas.");
       return;
     }
-    const nextUsers = db.users.map(u => {
-      if (u.id === activeUserId) return { ...u, password: securePassword, firstLoginReset: false };
-      return u;
-    });
-    handleUpdateDb({ ...db, users: nextUsers });
-    addNotification("Votre mot de passe a été configuré avec succès ! Votre espace est sécurisé.");
-    setShowSecurePasswordModal(false);
-    setSecurePassword('');
-    setSecurePasswordConfirm('');
-    setSecurePasswordError('');
-  }, [securePassword, securePasswordConfirm, db, activeUserId, handleUpdateDb, addNotification]);
+    try {
+      // SEC-02 : le mot de passe est géré par Firebase Auth, jamais stocké dans Firestore.
+      await changeOwnPassword(securePassword);
+      if (activeUser?.firstLoginReset) {
+        void handleUpdateDb({ ...db, users: db.users.map(u => u.id === activeUserId ? { ...u, firstLoginReset: false } : u) });
+      }
+      addNotification("Votre mot de passe a été configuré avec succès ! Votre espace est sécurisé.");
+      setShowSecurePasswordModal(false);
+      setSecurePassword('');
+      setSecurePasswordConfirm('');
+      setSecurePasswordError('');
+    } catch (err) {
+      setSecurePasswordError(authErrorMessage(err));
+    }
+  }, [securePassword, securePasswordConfirm, db, activeUser, activeUserId, handleUpdateDb, addNotification]);
 
   const handleOfflinePaymentFromLock = useCallback((paymentData: SubscriptionPayment) => {
     const nextPayments = [paymentData, ...(db.subscriptionPayments || [])];
@@ -201,6 +201,14 @@ function AppShell() {
     }
   }, [sidebarMenuItems, currentTab, isLoggedIn, setCurrentTab]);
 
+  if (authState.status === 'loading' && !authState.link) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-400 text-xs font-mono">
+        Vérification de la session…
+      </div>
+    );
+  }
+
   if (!isLoggedIn) {
     return <SaaSAuth />;
   }
@@ -250,9 +258,10 @@ function AppShell() {
             onClick={async () => {
               try {
                 addNotification('Synchronisation Cloud en cours...', 'info');
-                await handleUpdateDb(db);
-                await handleSyncFromServer();
-                addNotification('Synchronisation Cloud terminée avec succès !', 'success');
+                const res = await handleSyncFromServer();
+                if (res.dead > 0) addNotification(`${res.dead} opération(s) en échec : voir la console de synchronisation.`, 'error');
+                else if (!res.acknowledged || res.pending > 0) addNotification(`${res.pending} opération(s) en attente du serveur (connexion lente ou absente).`, 'warning');
+                else addNotification('Toutes les modifications sont confirmées par le serveur.', 'success');
               } catch {
                 addNotification('Erreur lors de la synchronisation.', 'error');
               }
@@ -401,14 +410,7 @@ function AppShell() {
             </div>
 
             <button
-              onClick={() => {
-                resetModuleCache();
-                setIsLoggedIn(false);
-                setActiveUserId('');
-                setActiveTenantId('');
-                localStorage.removeItem('nexastock_session');
-                localStorage.removeItem('nexastock_token');
-              }}
+              onClick={() => { void logout(); }}
               className="w-full py-1.5 bg-gray-900 hover:bg-red-500/10 border border-gray-800 hover:border-red-500/30 text-gray-400 hover:text-red-400 text-xs rounded-xl transition font-mono"
             >
               Se déconnecter
@@ -495,12 +497,6 @@ function AppShell() {
                         >
                           <CreditCard className="w-4 h-4" /> Déclarer un versement effectué
                         </button>
-                        <button
-                          onClick={handlePaySuspension}
-                          className="w-full bg-gray-950 hover:bg-gray-850 border border-gray-850 text-gray-400 hover:text-white text-[10.5px] font-mono font-bold py-1.5 rounded-xl transition"
-                        >
-                          Bypass Démo (Activer Provisoirement)
-                        </button>
                       </div>
                     </div>
                   ) : (
@@ -509,7 +505,7 @@ function AppShell() {
                         e.preventDefault();
                         if (!lockRef || !lockPhone) { alert("Veuillez saisir les références du transfert."); return; }
                         const paymentObj: SubscriptionPayment = {
-                          id: `pay-${Date.now()}`, tenantId: activeTenantId,
+                          id: newId('pay'), tenantId: activeTenantId,
                           tenantName: activeTenant?.name || "Boutique",
                           planId: `plan-${lockPlan.toLowerCase()}`, planName: lockPlan,
                           amount: Number(lockAmount), currency: activeTenant?.currency || 'EUR',
@@ -798,10 +794,12 @@ function AppShell() {
 
 export default function App() {
   return (
-    <DBProvider>
-      <AppProvider>
-        <AppShell />
-      </AppProvider>
-    </DBProvider>
+    <AuthProvider>
+      <DBProvider>
+        <AppProvider>
+          <AppShell />
+        </AppProvider>
+      </DBProvider>
+    </AuthProvider>
   );
 }

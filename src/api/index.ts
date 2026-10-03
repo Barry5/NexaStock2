@@ -1,3 +1,2 @@
-export { fetchServerState, syncWithServer } from './sync';
-export { loginApi } from './auth';
+export { flushOutbox, fetchSyncOverview } from './sync';
 export { fetchAiRestock } from './ai';

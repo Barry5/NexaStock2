@@ -1,9 +1,253 @@
 rules_version = '2';
+
+// NexaStock — règles Firestore (phases 1 et 2 de l'audit).
+//
+// Principes :
+//  - refus par défaut ; aucun accès sans compte Firebase Auth rattaché (authLinks/{uid}) ;
+//  - chaque document métier porte `tenantId` : lecture et écriture limitées à la boutique
+//    de l'utilisateur ; le super administrateur voit tout ;
+//  - aucune suppression physique par un client (suppression logique `deletedAt`),
+//    sauf super administrateur ;
+//  - journaux (audit, mouvements de stock, opérations) en ajout seul ;
+//  - aucun champ `password` n'est accepté dans `users`.
+//
+// Le rôle est lu dans users/{userId} ; la boutique dans authLinks/{uid}.
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Permettre la lecture et l'écriture pour l'application NexaStock
-    match /{document=**} {
-      allow read, write: if true;
+
+    // ---------- Fonctions d'identité ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+    function linkPath() {
+      return /databases/$(database)/documents/authLinks/$(request.auth.uid);
+    }
+    function hasLink() {
+      return signedIn() && exists(linkPath());
+    }
+    function link() {
+      return get(linkPath()).data;
+    }
+    function me() {
+      return get(/databases/$(database)/documents/users/$(link().userId)).data;
+    }
+    function myRole() {
+      return me().role;
+    }
+    function isActive() {
+      return !('active' in me()) || me().active == true;
+    }
+    function isSuper() {
+      return hasLink() && myRole() == 'superadmin';
+    }
+    function myTenant() {
+      return link().tenantId;
+    }
+    function hasTenant() {
+      return hasLink() && myTenant() is string && isActive();
+    }
+    function isTenantAdmin() {
+      return hasTenant() && myRole() in ['owner', 'admin'];
+    }
+    function canWrite() {
+      // Le rôle « lecture seule » ne modifie rien.
+      return hasTenant() && myRole() != 'lecture_seule';
+    }
+
+    // ---------- Fonctions de données ----------
+    function inMyTenant(data) {
+      return hasTenant() && data.tenantId == myTenant();
+    }
+    function tenantUnchanged() {
+      return request.resource.data.tenantId == resource.data.tenantId;
+    }
+    function noPassword() {
+      return !('password' in request.resource.data);
+    }
+    function isSoftDelete() {
+      // Seuls les champs de suppression logique et de traçabilité changent.
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'deletedAt', 'deletedBy', 'active', 'tenantId', 'version', 'updatedAt', 'updatedBy', 'deviceId', 'lastOperationId'
+      ]) && request.resource.data.deletedAt != null;
+    }
+
+    // ---------- Liens Auth -> utilisateur -> boutique ----------
+    match /authLinks/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isSuper()
+        || (isTenantAdmin() && resource.data.tenantId == myTenant()));
+
+      // 1) Inscription d'une nouvelle boutique (lot atomique : boutique + fiche + lien).
+      // 2) Création d'un collaborateur par un administrateur de la boutique.
+      // 3) Super administrateur.
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/authLinks/$(uid)) && (
+        isSuper()
+        || (
+          request.auth.uid == uid
+          && !hasLink()
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.tenantId is string
+          && !exists(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId))
+          && existsAfter(/databases/$(database)/documents/tenants/$(request.resource.data.tenantId))
+          && getAfter(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.role == 'owner'
+          && getAfter(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.tenantId == request.resource.data.tenantId
+        )
+        || (
+          isTenantAdmin()
+          && request.auth.uid != uid
+          && request.resource.data.tenantId == myTenant()
+          && getAfter(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.tenantId == myTenant()
+          && getAfter(/databases/$(database)/documents/users/$(request.resource.data.userId)).data.role != 'superadmin'
+        )
+      );
+      allow update: if isSuper();
+      allow delete: if isSuper()
+        || (isTenantAdmin() && resource.data.tenantId == myTenant() && request.auth.uid != uid);
+    }
+
+    // ---------- Utilisateurs ----------
+    match /users/{userId} {
+      allow read: if isSuper()
+        || (hasLink() && link().userId == userId)
+        || (hasTenant() && resource.data.tenantId == myTenant());
+
+      allow create: if noPassword() && (
+        isSuper()
+        // Inscription : la fiche propriétaire est créée dans le même lot que le lien.
+        || (signedIn() && !hasLink()
+            && getAfter(linkPath()).data.userId == userId
+            && request.resource.data.role == 'owner'
+            && request.resource.data.tenantId == getAfter(linkPath()).data.tenantId
+            && request.resource.data.email == request.auth.token.email)
+        // Administrateur de boutique : collaborateurs de SA boutique, jamais super admin.
+        || (isTenantAdmin()
+            && request.resource.data.tenantId == myTenant()
+            && request.resource.data.role != 'superadmin')
+      );
+
+      allow update: if noPassword() && (
+        isSuper()
+        || (isTenantAdmin()
+            && resource.data.tenantId == myTenant()
+            && tenantUnchanged()
+            && request.resource.data.role != 'superadmin'
+            && (resource.data.role != 'owner' || myRole() == 'owner'))
+        // L'utilisateur peut modifier son profil, mais ni son rôle, ni sa boutique, ni son statut.
+        || (hasLink() && link().userId == userId
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'tenantId', 'active']))
+      );
+      allow delete: if isSuper();
+    }
+
+    // ---------- Boutiques ----------
+    match /tenants/{tenantId} {
+      allow read: if isSuper() || (hasTenant() && tenantId == myTenant());
+
+      // Inscription : création de SA boutique, en période d'essai, dans le lot du lien.
+      allow create: if isSuper() || (
+        signedIn() && !hasLink()
+        && getAfter(linkPath()).data.tenantId == tenantId
+        && request.resource.data.subscriptionStatus == 'TRIAL'
+      );
+
+      allow update: if isSuper()
+        // Paramètres de la boutique par ses administrateurs, sans toucher à l'abonnement.
+        || (isTenantAdmin() && tenantId == myTenant()
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+              'plan', 'subscriptionStatus', 'subscriptionPlanId', 'subscriptionStartDate',
+              'subscriptionEndDate', 'trialStartDate', 'trialEndDate', 'deletedAt'
+            ]))
+        // Déclaration d'un paiement d'abonnement : passage en attente de validation uniquement.
+        || (hasTenant() && tenantId == myTenant()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'subscriptionStatus', 'subscriptionPlanId', 'version', 'updatedAt', 'updatedBy', 'deviceId', 'lastOperationId', 'tenantId'
+            ])
+            && request.resource.data.subscriptionStatus == 'PENDING');
+      allow delete: if isSuper();
+    }
+
+    // ---------- Catalogue SaaS global ----------
+    match /pricingPlans/{planId} {
+      allow read: if true; // affiché sur la page d'inscription
+      allow write: if isSuper();
+    }
+    match /moduleDefinitions/{moduleId} {
+      allow read: if signedIn();
+      allow write: if isSuper();
+    }
+    match /planModules/{id} {
+      allow read: if signedIn();
+      allow write: if isSuper();
+    }
+    match /system/{docId} {
+      allow read: if signedIn();
+      allow write: if isSuper();
+    }
+    match /tenantModules/{id} {
+      allow read: if isSuper() || inMyTenant(resource.data);
+      allow write: if isSuper();
+    }
+
+    // ---------- Abonnements ----------
+    match /subscriptionPayments/{id} {
+      allow read: if isSuper() || inMyTenant(resource.data);
+      allow create: if isSuper() || (inMyTenant(request.resource.data) && request.resource.data.status == 'PENDING');
+      allow update, delete: if isSuper();
+    }
+    match /subscriptionInvoices/{id} {
+      allow read: if isSuper() || inMyTenant(resource.data);
+      allow write: if isSuper();
+    }
+
+    // ---------- Journaux en ajout seul ----------
+    match /{journal}/{id} {
+      allow read: if (journal in ['auditLogs', 'invoiceAuditLogs', 'deliveryNoteAudit', 'commissionAudit', 'stockMovements', 'operations'])
+        && (isSuper() || inMyTenant(resource.data));
+      allow create: if (journal in ['auditLogs', 'invoiceAuditLogs', 'deliveryNoteAudit', 'commissionAudit', 'stockMovements', 'operations'])
+        && (isSuper() || (canWrite() && request.resource.data.tenantId == myTenant()));
+      // `operations` : un renvoi (même identifiant) est refusé => un incrément n'est jamais appliqué deux fois.
+      allow update, delete: if (journal in ['auditLogs', 'invoiceAuditLogs', 'deliveryNoteAudit', 'commissionAudit', 'stockMovements', 'operations'])
+        && isSuper();
+    }
+
+    // ---------- Quarantaine de migration ----------
+    match /syncQuarantine/{id} {
+      allow read, update: if isSuper() || (isTenantAdmin() && resource.data.tenantId == myTenant());
+      allow create: if isSuper() || (hasTenant() && request.resource.data.tenantId == myTenant());
+      allow delete: if isSuper() || (isTenantAdmin() && resource.data.tenantId == myTenant());
+    }
+
+    // ---------- Compteurs de numérotation (factures / tickets) ----------
+    match /counters/{counterId} {
+      allow read: if isSuper() || (hasTenant() && counterId.matches(myTenant() + '_[A-Z]{2,5}_[0-9]{4}'));
+      allow create: if (isSuper() || (canWrite() && counterId.matches(myTenant() + '_[A-Z]{2,5}_[0-9]{4}')))
+        && request.resource.data.last == 1;
+      allow update: if (isSuper() || (canWrite() && counterId.matches(myTenant() + '_[A-Z]{2,5}_[0-9]{4}')))
+        && request.resource.data.last == resource.data.last + 1;
+      allow delete: if false;
+    }
+
+    // ---------- Données métier de la boutique ----------
+    match /{collection}/{id} {
+      function isBusinessCollection() {
+        return collection in [
+          'products', 'sales', 'customers', 'suppliers', 'expenses', 'loans', 'warehouses',
+          'transfers', 'variants', 'invoices', 'deliveryOrders', 'payments', 'returns',
+          'affiliates', 'commissionRules', 'commissionLedger', 'commissionPayments'
+        ];
+      }
+      allow read: if isBusinessCollection() && (isSuper() || inMyTenant(resource.data));
+      allow create: if isBusinessCollection() && (isSuper() || (canWrite() && request.resource.data.tenantId == myTenant()));
+      allow update: if isBusinessCollection() && (
+        isSuper()
+        || (canWrite() && resource.data.tenantId == myTenant() && tenantUnchanged()
+            // une suppression logique est réservée aux administrateurs et gérants
+            && (!('deletedAt' in request.resource.data) || request.resource.data.deletedAt == null
+                || ('deletedAt' in resource.data && resource.data.deletedAt != null)
+                || myRole() in ['owner', 'admin', 'gerant']))
+      );
+      // Aucune suppression physique par une boutique (SYNC-01 / SEC-04).
+      allow delete: if isBusinessCollection() && isSuper();
     }
   }
 }

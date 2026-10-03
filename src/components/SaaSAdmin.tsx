@@ -36,6 +36,8 @@ import AdminLogs from './admin/AdminLogs';
 import AdminSyncOverview from './admin/AdminSyncOverview';
 import { fetchSyncOverview } from '../api/sync';
 import { saveGlobalSaaSSettingsToFirestore, savePricingPlansToFirestore } from '../lib/firebaseSync';
+import { sendResetEmail, authErrorMessage } from '../lib/authService';
+import { newId, uuid } from '../lib/ids';
 
 function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = localStorage.getItem('nexastock_token');
@@ -46,7 +48,7 @@ function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
 }
 
 export default function SaaSAdmin() {
-  const { db, handleUpdateDb, addNotification } = useDB();
+  const { db, handleUpdateDb, handleDeleteRecords, addNotification } = useDB();
   const { activeUserId, saasSubTab: propActiveSubTab, setSaasSubTab: propSetActiveSubTab } = useApp();
   const [localActiveSubTab, setLocalActiveSubTab] = useState<'stats' | 'tenants' | 'users' | 'invoices' | 'logs' | 'support' | 'plans' | 'modules' | 'sync'>('stats');
   
@@ -257,12 +259,10 @@ export default function SaaSAdmin() {
 
   const confirmDeleteTenant = async () => {
     if (!deleteTenantId) return;
-    const data = await apiCall('DELETE', `/api/saas/tenants/${deleteTenantId}`);
-    if (data) {
-      handleUpdateDb({ ...db, tenants: db.tenants.filter(t => t.id !== deleteTenantId) });
-      if (selectedTenantId === deleteTenantId) { setSelectedTenantId(null); setTenantDetail(null); }
-      addNotification(data.message || 'Entreprise supprimée');
-    }
+    // Suppression logique dans Firestore (super admin), indépendante de l'API historique.
+    await handleDeleteRecords('tenants', [deleteTenantId]);
+    if (selectedTenantId === deleteTenantId) { setSelectedTenantId(null); setTenantDetail(null); }
+    addNotification('Entreprise supprimée (suppression logique, réversible par un super administrateur).');
     setDeleteTenantId(null);
   };
 
@@ -324,7 +324,7 @@ export default function SaaSAdmin() {
     });
 
     const audit: any = {
-      id: `aud-adm-${Date.now()}`,
+      id: `aud-adm-${uuid()}`,
       timestamp: new Date().toISOString(),
       userId: 'admin-root',
       userName: 'Super-Administrateur',
@@ -352,45 +352,37 @@ export default function SaaSAdmin() {
     setPasswordModalVisible(true);
   };
 
-  const handleConfirmPasswordReset = () => {
+  const handleConfirmPasswordReset = async () => {
     if (!passwordModalTargetId) return;
-    if (passwordModalValue.length < 4) return;
-    if (passwordModalValue !== passwordModalConfirm) return;
-
     const target = db.users.find(u => u.id === passwordModalTargetId);
     if (!target) return;
 
-    const nextUsers = db.users.map(u => {
-      if (u.id === passwordModalTargetId) {
-        return {
-          ...u,
-          password: passwordModalValue,
-          firstLoginReset: true
-        };
-      }
-      return u;
-    });
+    // SEC-02 : envoi d'un lien de réinitialisation ; le super admin ne choisit plus le mot de passe.
+    try {
+      await sendResetEmail(target.email);
+    } catch (err) {
+      addNotification(authErrorMessage(err), 'error');
+      return;
+    }
 
     const audit: any = {
-      id: `aud-adm-${Date.now()}`,
+      id: newId('aud-adm'),
       timestamp: new Date().toISOString(),
       userId: 'admin-root',
       userName: 'Super-Administrateur',
-      action: 'USER_PASSWORD_RESET_FORCE',
-      details: `Le mot de passe de ${target.name} a été modifié de force par le super-admin.`,
+      action: 'USER_PASSWORD_RESET_LINK',
+      details: `Lien de réinitialisation envoyé à ${target.name}.`,
       tenantId: target.tenantId
     };
 
-    const nextDb = {
+    void handleUpdateDb({
       ...db,
-      users: nextUsers,
+      users: db.users.map(u => u.id === passwordModalTargetId ? { ...u, firstLoginReset: true } : u),
       auditLogs: [audit, ...(db.auditLogs || [])]
-    };
-
-    handleUpdateDb(nextDb);
+    });
     setPasswordModalVisible(false);
     setPasswordModalTargetId(null);
-    addNotification(`Mot de passe réinitialisé pour ${target.name}`);
+    addNotification(`Lien de réinitialisation envoyé à ${target.email}`);
   };
 
   // Save Pricing plan details dynamically (Local state only)
@@ -479,8 +471,7 @@ export default function SaaSAdmin() {
 
   const confirmDeleteUser = () => {
     if (!deleteUserId) return;
-    const nextUsers = db.users.filter(u => u.id !== deleteUserId);
-    handleUpdateDb({ ...db, users: nextUsers });
+    void handleDeleteRecords('users', [deleteUserId]);
     addNotification(`Utilisateur système supprimé.`);
     setDeleteUserId(null);
   };
@@ -774,40 +765,8 @@ export default function SaaSAdmin() {
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-400">
-            Saisir un nouveau mot de passe provisoire pour <strong className="text-white">{db.users.find(u => u.id === passwordModalTargetId)?.name}</strong>
+            Un lien de réinitialisation sera envoyé par e-mail à <strong className="text-white">{db.users.find(u => u.id === passwordModalTargetId)?.email}</strong>.
           </p>
-          <div>
-            <label className="block text-xs text-gray-500 font-semibold mb-1.5">Nouveau mot de passe</label>
-            <div className="relative">
-              <input
-                type={passwordModalShowPwd ? 'text' : 'password'}
-                value={passwordModalValue}
-                onChange={e => setPasswordModalValue(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-brand-blue/60 transition pr-10"
-                placeholder="Minimum 4 caractères"
-              />
-              <button
-                type="button"
-                onClick={() => setPasswordModalShowPwd(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-              >
-                {passwordModalShowPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 font-semibold mb-1.5">Confirmer le mot de passe</label>
-            <input
-              type="password"
-              value={passwordModalConfirm}
-              onChange={e => setPasswordModalConfirm(e.target.value)}
-              className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-brand-blue/60 transition"
-              placeholder="Retapez le mot de passe"
-            />
-            {passwordModalConfirm && passwordModalValue !== passwordModalConfirm && (
-              <p className="text-xs text-red-400 mt-1">Les mots de passe ne correspondent pas.</p>
-            )}
-          </div>
           <div className="flex gap-2 pt-2">
             <button
               onClick={() => { setPasswordModalVisible(false); setPasswordModalTargetId(null); }}
@@ -817,10 +776,9 @@ export default function SaaSAdmin() {
             </button>
             <button
               onClick={handleConfirmPasswordReset}
-              disabled={passwordModalValue.length < 4 || passwordModalValue !== passwordModalConfirm}
               className="flex-1 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-bold rounded-xl transition"
             >
-              Réinitialiser
+              Envoyer le lien
             </button>
           </div>
         </div>

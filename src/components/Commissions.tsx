@@ -1854,7 +1854,7 @@ function ReceiptModal({
 // 5. RULES VIEW (RÈGLES DE COMMISSION)
 // ==========================================
 function RulesView() {
-  const { db, handleUpdateDb, addNotification } = useDB();
+  const { db, handleUpdateDb, handleDeleteRecords, addNotification } = useDB();
   const { activeTenantId } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
@@ -2007,10 +2007,7 @@ function RulesView() {
         confirmLabel="Supprimer"
         onConfirm={() => {
           if (!deleteRuleId) return;
-          handleUpdateDb({
-            ...db,
-            commissionRules: (db.commissionRules || []).filter(r => r.id !== deleteRuleId)
-          });
+          void handleDeleteRecords('commissionRules', [deleteRuleId]);
           addNotification('Règle supprimée');
           setDeleteRuleId(null);
         }}

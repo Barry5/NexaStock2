@@ -4,40 +4,33 @@ import { Cloud, CloudOff, RefreshCw, User as UserIcon, LogOut, ChevronDown, Chec
 import UserProfileModal from '../UserProfileModal';
 
 export function Header() {
-  const { db, isSyncing, syncError, isOnline, handleUpdateDb, handleSyncFromServer, addNotification } = useDB();
-  const { activeTenant, activeUser, activeTenantId, handleSwitchTenant, currentTab, setIsLoggedIn, setActiveUserId, setActiveTenantId } = useApp();
+  const { db, isSyncing, syncError, isOnline, handleSyncFromServer, addNotification } = useDB();
+  const { activeTenant, activeUser, activeTenantId, handleSwitchTenant, currentTab, logout } = useApp();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [tenantDropdownOpen, setTenantDropdownOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
 
   const isSuperAdmin = activeUser?.role === 'superadmin';
 
+  // OBS-02 : le résultat affiché est celui de la file réelle, plus un « succès » systématique.
   const handleManualSync = async () => {
     try {
-      addNotification(
-        isSuperAdmin 
-          ? 'Synchronisation Firebase Firestore en cours...' 
-          : 'Synchronisation des données en cours...'
-      );
-      await handleUpdateDb(db);
-      await handleSyncFromServer();
-      addNotification(
-        isSuperAdmin 
-          ? 'Base de données synchronisée avec Firestore !' 
-          : 'Données synchronisées avec succès !',
-        'success'
-      );
+      addNotification('Envoi des modifications en attente...');
+      const res = await handleSyncFromServer();
+      if (res.dead > 0) {
+        addNotification(`${res.dead} opération(s) en échec : voir la console de synchronisation.`, 'error');
+      } else if (!res.acknowledged || res.pending > 0) {
+        addNotification(`${res.pending} opération(s) en attente du serveur (connexion lente ou absente).`, 'warning');
+      } else {
+        addNotification('Toutes les modifications sont confirmées par le serveur.', 'success');
+      }
     } catch {
       addNotification('Erreur lors de la synchronisation.', 'error');
     }
   };
 
   const handleLogout = () => {
-    setIsLoggedIn(false);
-    setActiveUserId('');
-    setActiveTenantId('');
-    localStorage.removeItem('nexastock_session');
-    localStorage.removeItem('nexastock_token');
+    void logout();
   };
 
   const getInitials = (n?: string) => {

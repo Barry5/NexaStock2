@@ -1,141 +1,125 @@
+/**
+ * État des données de l'application et synchronisation (phases 1 et 2 de l'audit).
+ *
+ * Principes :
+ *  - les données affichées viennent des écouteurs Firestore BORNÉS à la boutique de
+ *    l'utilisateur connecté (cache persistant : fonctionnement hors ligne) ;
+ *  - un écran propose un nouvel état (`handleUpdateDb`) : seules les créations et
+ *    modifications sont déduites, champ par champ, puis écrites dans l'outbox locale
+ *    (IndexedDB) AVANT d'être confiées à Firestore ;
+ *  - les suppressions sont explicites et logiques (`handleDeleteRecords`) ;
+ *  - aucune donnée n'est jamais renvoyée au serveur à partir du cache local
+ *    (suppression du mécanisme de « résurrection », SYNC-01).
+ */
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
-import type { DBState, NotificationItem, NotificationType, Tenant, User, Sale, Product, Customer, Supplier, Expense, Loan } from '../types';
-import { fetchServerState, pullRemoteChanges, flushPendingChanges, enqueueChange, extractChanges, getPendingCount, type SyncChange } from '../api/sync';
-import { TABLE_TO_CLIENT_FIELD, EMBEDDED_CHILDREN } from '../shared/syncMappings';
+import { collection, getDocs, query, where, deleteDoc, waitForPendingWrites } from 'firebase/firestore';
+import type { DBState, NotificationItem, NotificationType, Product, Sale, Customer, Supplier, Expense, Loan } from '../types';
 import { LOCAL_CACHE_KEY } from '../constants';
-import { setItem as dexieSet, getItem as dexieGet, removeItem as dexieRemove } from '../lib/storage';
+import { setItem as cacheSet, getItem as cacheGet, removeItem as cacheRemove } from '../lib/storage';
 import {
-  subscribeToFirestoreChanges,
+  subscribeScopedCollections,
   saveGlobalSaaSSettingsToFirestore,
-  savePricingPlansToFirestore,
-  pushBatchToFirestore
+  SYNCED_FIELDS,
+  type SyncScope,
 } from '../lib/firebaseSync';
+import { db as firestore, firestorePersistenceEnabled } from '../lib/firebase';
+import { flushOutbox } from '../api/sync';
+import {
+  enqueueChanges,
+  recoverOutbox,
+  getOutboxStats,
+  getUnsyncedCount,
+  type OutboxStats,
+} from '../lib/syncQueue';
+import {
+  extractRecordChanges,
+  applyChangesToState,
+  buildSoftDelete,
+  deepEqual,
+  GLOBAL_TABLES,
+  type RecordChange,
+} from '../sync/changeEngine';
+import { getDeviceId, newId } from '../lib/ids';
+import { useAuth } from './AuthContext';
+import { logSyncEvent } from '../lib/syncLogger';
+import { finalizeInvoiceNumber, invoicePrefixOf } from '../lib/invoiceNumbering';
+
+export type ConnectionState = 'online' | 'offline' | 'degraded';
+
+export interface SyncResult {
+  issued: number;
+  acknowledged: boolean;
+  pending: number;
+  dead: number;
+}
 
 interface DBContextValue {
   db: DBState;
   isSyncing: boolean;
   syncError: boolean;
   isOnline: boolean;
+  connectionState: ConnectionState;
+  outboxStats: OutboxStats;
+  dataReady: boolean;
   lastCacheTime: string;
   notifications: NotificationItem[];
   addNotification: (text: string, type?: NotificationType) => void;
-  handleUpdateDb: (nextDb: DBState) => void;
+  handleUpdateDb: (nextDb: DBState) => Promise<void>;
+  handleDeleteRecords: (field: keyof DBState, ids: string[]) => Promise<void>;
   handleProductsUpdate: (nextProducts: Product[]) => void;
   handleAddSale: (newSale: Sale, nextProducts: Product[], nextCustomers: Customer[]) => void;
   handleUpdateExpenses: (nextExpenses: Expense[]) => void;
   handleUpdateLoans: (nextLoans: Loan[]) => void;
   handleUpdateCustomers: (nextCustomers: Customer[]) => void;
   handleUpdateSuppliers: (nextSuppliers: Supplier[]) => void;
-  handleSyncFromServer: () => Promise<void>;
+  /** Envoie la file locale et attend l'accusé du serveur (15 s max). Résultat réel. */
+  handleSyncFromServer: () => Promise<SyncResult>;
+  /** Purge le cache d'affichage de l'utilisateur (déconnexion). */
+  clearLocalData: () => Promise<void>;
+  getUnsyncedOperationsCount: () => Promise<number>;
 }
 
 const DBContext = createContext<DBContextValue | null>(null);
 
-// Replie les enregistrements enfants (table `<childTable>`) dans le tableau
-// embarqué du parent (`<parent>.<field>`). Ex : sale_items -> sales[].items,
-// repayments -> loans[].repayments. Le pull PWA porte la table enfant ; le
-// client ne manipulant que les parents embarqués, chaque enfant pullé est soit
-// injecté, soit remplacé dans son parent.
-function mergeChildrenEmbedded(merged: DBState, table: string, records: any[]): DBState {
-  const next = { ...merged };
-  for (const [parentTable, children] of Object.entries(EMBEDDED_CHILDREN)) {
-    const def = children.find(c => c.childTable === table);
-    if (!def) continue;
-    const parentField = TABLE_TO_CLIENT_FIELD[parentTable] as keyof DBState;
-    const parents = (Array.isArray(next[parentField]) ? next[parentField] : []) as any[];
-    const childrenMap = new Map(records.map(r => [r.id, r]));
-    next[parentField] = parents.map(p => {
-      const items = Array.isArray(p[def.field]) ? p[def.field] : [];
-      const updated: any[] = [];
-      const existingIds = new Set<string>();
-      for (const it of items) {
-        existingIds.add(it.id);
-        updated.push(childrenMap.get(it.id) || it);
-      }
-      for (const child of childrenMap.values()) {
-        if (child[def.parentColumn] === p.id && !existingIds.has(child.id)) {
-          updated.push(child);
-        }
-      }
-      return { ...p, [def.field]: updated };
-    }) as never;
-  }
-  return next;
-}
+export const EMPTY_DB_STATE: DBState = {
+  tenants: [], users: [], products: [], sales: [],
+  customers: [], suppliers: [], expenses: [], loans: [],
+  warehouses: [], transfers: [], auditLogs: [],
+  subscriptionInvoices: [], variants: [],
+};
 
-function deepMergeDbState(local: DBState, remoteChanges: Record<string, unknown[]>, deletions: Record<string, string[]>): DBState {
-  const merged = { ...local };
+const EMPTY_STATS: OutboxStats = { pending: 0, sent: 0, dead: 0, oldestPendingAt: null, oldestSentAt: null };
+const LEGACY_CACHE_KEY = LOCAL_CACHE_KEY; // ancien instantané global, toutes boutiques confondues
+const userCacheKey = (uid: string) => `${LOCAL_CACHE_KEY}:${uid}`;
 
-  for (const [table, records] of Object.entries(remoteChanges)) {
-    if (!records.length) continue;
-    // ✔ Mapping table SQLite -> champ DBState (P1) : `stock_transfers` ->
-    // `transfers`, `audit_logs` -> `auditLogs`, `sale_items` -> embarqué.
-    const field = TABLE_TO_CLIENT_FIELD[table] || table;
-    const key = field as keyof DBState;
-    const existing = (Array.isArray(merged[key]) ? merged[key] : []) as any[];
-    const existingMap = new Map(existing.map(r => [r.id, r]));
-
-    for (const record of records) {
-      const rec = record as any;
-      const existingRecord = existingMap.get(rec.id);
-      if (!existingRecord) {
-        existing.push(record);
-      } else {
-        const localVersion = existingRecord.version || 0;
-        const remoteVersion = rec.version || 0;
-        if (remoteVersion >= localVersion) {
-          const idx = existing.findIndex(r => r.id === rec.id);
-          if (idx >= 0) existing[idx] = record;
-        }
-      }
-    }
-    (merged as any)[key] = existing;
-
-    // Repli des enfants (sale_items, repayments…) dans le parent embarqué.
-    Object.assign(merged, mergeChildrenEmbedded(merged as DBState, table, records));
-  }
-
-  for (const [table, ids] of Object.entries(deletions)) {
-    if (!ids.length) continue;
-    const field = TABLE_TO_CLIENT_FIELD[table] || table;
-    const key = field as keyof DBState;
-    const existing = (Array.isArray(merged[key]) ? merged[key] : []) as any[];
-    (merged as any)[key] = existing.filter(r => !ids.includes(r.id));
-  }
-
-  return merged;
+function recordsInScope(list: unknown, scope: SyncScope): Record<string, unknown>[] {
+  if (!Array.isArray(list)) return [];
+  return (list as Record<string, unknown>[]).filter(r => r && r.id != null && (scope.isSuperAdmin || r.tenantId === scope.tenantId));
 }
 
 export function DBProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DBState>(() => {
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        const raw = window.localStorage.getItem(LOCAL_CACHE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
-            return parsed;
-          }
-        }
-      }
-    } catch { /* ignore synchronous cache load error */ }
-    return {
-      tenants: [], users: [], products: [], sales: [],
-      customers: [], suppliers: [], expenses: [], loans: [],
-      warehouses: [], transfers: [], auditLogs: [],
-      subscriptionInvoices: [], variants: [],
-    };
-  });
-
+  const { scope } = useAuth();
+  const [db, setDb] = useState<DBState>(EMPTY_DB_STATE);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [outboxStats, setOutboxStats] = useState<OutboxStats>(EMPTY_STATS);
+  const [dataReady, setDataReady] = useState(false);
   const [lastCacheTime, setLastCacheTime] = useState('');
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const notifCounterRef = useRef(0);
   const dbRef = useRef(db);
   dbRef.current = db;
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scopeRef = useRef<SyncScope | null>(scope);
+  scopeRef.current = scope;
+  // Objets déjà présents dans un état affiché : non modifiés par l'écran qui les renvoie.
+  const knownRecordsRef = useRef(new WeakSet<object>());
+  const cacheTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scopeUid = scope?.uid ?? null;
+  const scopeTenant = scope?.tenantId ?? null;
+  const scopeSuper = scope?.isSuperAdmin ?? false;
+  const scopeUserId = scope?.userId ?? null;
 
   const addNotification = useCallback((text: string, type?: NotificationType) => {
     const id = `notif-${Date.now()}-${++notifCounterRef.current}`;
@@ -143,317 +127,402 @@ export function DBProvider({ children }: { children: ReactNode }) {
     setNotifications(prev => [{ id, text, time, type: type || 'info' }, ...prev].slice(0, 10));
   }, []);
 
-  const persistCache = useCallback((data: DBState) => {
+  // Enregistre les objets de l'état courant comme « connus » (voir extractRecordChanges).
+  useEffect(() => {
+    const known = knownRecordsRef.current;
+    for (const value of Object.values(db)) {
+      if (Array.isArray(value)) for (const r of value) if (r && typeof r === 'object') known.add(r);
+    }
+  }, [db]);
+
+  // Cache d'affichage par utilisateur (IndexedDB), écrit au plus toutes les 5 s.
+  // Il sert uniquement à afficher les données avant le premier instantané ; il n'est
+  // JAMAIS utilisé pour renvoyer des données au serveur.
+  useEffect(() => {
+    if (!scopeUid || !dataReady) return;
+    if (cacheTimerRef.current) clearTimeout(cacheTimerRef.current);
+    cacheTimerRef.current = setTimeout(() => {
+      try {
+        void cacheSet(userCacheKey(scopeUid), JSON.stringify(dbRef.current));
+        setLastCacheTime(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      } catch { /* cache facultatif */ }
+    }, 5000);
+    return () => { if (cacheTimerRef.current) clearTimeout(cacheTimerRef.current); };
+  }, [db, scopeUid, dataReady]);
+
+  const refreshStats = useCallback(async () => {
     try {
-      if (!data || !Array.isArray(data.tenants) || data.tenants.length === 0) return;
-      // Protection anti-perte de données : si la nouvelle donnée a 0 produit mais que la référence locale en possédait, conserver les produits locaux
-      const dataToSave = { ...data };
-      if ((!dataToSave.products || dataToSave.products.length === 0) && (dbRef.current?.products && dbRef.current.products.length > 0)) {
-        dataToSave.products = dbRef.current.products;
-      }
-      const serialized = JSON.stringify(dataToSave);
-      dexieSet(LOCAL_CACHE_KEY, serialized);
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(LOCAL_CACHE_KEY, serialized);
-      }
-      setLastCacheTime(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    } catch { /* storage error - ignore */ }
+      setOutboxStats(await getOutboxStats(scopeRef.current?.uid ?? null));
+    } catch { /* ignore */ }
   }, []);
 
-  const loadStateFromServer = useCallback(async () => {
+  const flush = useCallback(async () => {
+    const s = scopeRef.current;
+    if (!s) return { issued: 0 };
     try {
-      // Tenter d'abord d'évacuer les modifications locales en attente
+      const res = await flushOutbox({ uid: s.uid, userId: s.userId, tenantId: s.tenantId });
+      return res;
+    } catch (err) {
+      console.error('[SYNC] Échec de l\'envoi de la file locale :', err);
+      setSyncError(true);
+      return { issued: 0 };
+    } finally {
+      void refreshStats();
+    }
+  }, [refreshStats]);
+
+  // Abonnement aux données de la boutique de l'utilisateur connecté.
+  useEffect(() => {
+    if (!scopeUid) {
+      setDb(EMPTY_DB_STATE);
+      setDataReady(false);
+      return;
+    }
+    const scopeNow: SyncScope = { uid: scopeUid, userId: scopeUserId || '', tenantId: scopeTenant, isSuperAdmin: scopeSuper };
+    let cancelled = false;
+    let receivedSnapshot = false;
+    const serverLoaded = new Set<string>();
+    setDb(EMPTY_DB_STATE);
+    setDataReady(false);
+
+    // 1. Affichage immédiat depuis le cache d'affichage de CET utilisateur.
+    cacheGet(userCacheKey(scopeUid)).then(raw => {
+      if (cancelled || receivedSnapshot || !raw) return;
       try {
-        await flushPendingChanges();
-      } catch (e) {
-        console.warn('[SYNC] flushPendingChanges avant chargement:', e);
+        const parsed = JSON.parse(raw) as DBState;
+        setDb(prev => ({ ...prev, ...parsed }));
+      } catch { /* cache illisible : ignoré */ }
+    }).catch(() => undefined);
+
+    // 2. Reprise de la file locale : opérations envoyées sans accusé => renvoyées (idempotent).
+    recoverOutbox(scopeUid)
+      .then(recovered => {
+        if (recovered > 0) console.info(`[SYNC] ${recovered} opération(s) non acquittée(s) remise(s) en file.`);
+        return flush();
+      })
+      .catch(err => console.warn('[SYNC] Reprise de la file locale impossible :', err));
+
+    // 3. Écouteurs bornés à la boutique.
+    let legacyChecked = false;
+    const unsubscribe = subscribeScopedCollections(scopeNow, {
+      onCollection: ({ field, records, fromCache }) => {
+        receivedSnapshot = true;
+        setDb(prev => ({ ...prev, [field]: records } as DBState));
+        setDataReady(true);
+        if (!fromCache) serverLoaded.add(field);
+        if (!legacyChecked && serverLoaded.size >= SYNCED_FIELDS.length - 2) {
+          legacyChecked = true;
+          void quarantineLegacyCache(scopeNow);
+        }
+      },
+      onSettings: settings => {
+        setDb(prev => ({
+          ...prev,
+          globalSaaSSettings: settings,
+          saasCurrency: settings.saasCurrency || settings.currency || prev.saasCurrency,
+        }));
+      },
+      onError: (field, error) => {
+        console.warn(`[FIRESTORE] Écouteur ${field} :`, error);
+        if (error.code === 'permission-denied') {
+          setSyncError(true);
+          logSyncEvent({
+            tenantId: scopeNow.tenantId || 'global_system',
+            tenantName: scopeNow.tenantId ? `Boutique ${scopeNow.tenantId}` : 'Système SaaS',
+            collection: field,
+            operation: 'REALTIME',
+            status: 'ERROR',
+            recordsCount: 0,
+            errorMessage: `Lecture refusée par les règles (${error.message || error.code})`,
+            source: 'Firestore Cloud',
+          });
+        }
+      },
+    });
+
+    // Si l'utilisateur n'a aucune donnée, considérer l'état prêt après un court délai.
+    const readyTimer = setTimeout(() => { if (!cancelled) setDataReady(true); }, 4000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(readyTimer);
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeUid, scopeTenant, scopeSuper, scopeUserId]);
+
+  /**
+   * Migration depuis l'ancienne version : l'ancien instantané global pouvait contenir des
+   * enregistrements jamais envoyés. Au lieu de les recréer (SYNC-01), on les place en
+   * quarantaine (`syncQuarantine`) pour examen par un administrateur, puis on supprime
+   * l'ancien cache (qui contenait les données de toutes les boutiques, SEC-06).
+   */
+  const quarantineLegacyCache = useCallback(async (s: SyncScope) => {
+    try {
+      const raw = await cacheGet(LEGACY_CACHE_KEY);
+      if (!raw) return;
+      const legacy = JSON.parse(raw) as Record<string, unknown>;
+      const current = dbRef.current as unknown as Record<string, unknown>;
+      const deviceId = getDeviceId();
+      const changes: RecordChange[] = [];
+      for (const field of SYNCED_FIELDS) {
+        if (field === 'users') continue; // ne jamais recopier de fiches utilisateur (mots de passe)
+        const serverIds = new Set(recordsInScope(current[field], s).map(r => String(r.id)));
+        for (const rec of recordsInScope(legacy[field], s)) {
+          if (serverIds.has(String(rec.id))) continue;
+          const { password: _pw, ...clean } = rec as Record<string, unknown> & { password?: unknown };
+          let payload = JSON.stringify(clean);
+          if (payload.length > 200_000) payload = payload.slice(0, 200_000);
+          const id = newId('q');
+          changes.push({
+            table: 'syncQuarantine',
+            recordId: id,
+            operation: 'CREATE',
+            tenantId: (rec.tenantId as string) || s.tenantId,
+            fields: {
+              id: { kind: 'set', value: id },
+              tenantId: { kind: 'set', value: (rec.tenantId as string) || s.tenantId },
+              collection: { kind: 'set', value: field },
+              recordId: { kind: 'set', value: String(rec.id) },
+              data: { kind: 'set', value: payload },
+              detectedAt: { kind: 'set', value: new Date().toISOString() },
+              deviceId: { kind: 'set', value: deviceId },
+              status: { kind: 'set', value: 'to_review' },
+            },
+          });
+        }
       }
-
-      const serverData = await fetchServerState();
-
-      // Fusion intelligente pour conserver et propager les données créées sur mobile
-      setDb(prev => {
-        const currentLocal = dbRef.current || prev;
-        const merged: DBState = { ...serverData };
-        const arrayFields: (keyof DBState)[] = [
-          'products', 'sales', 'customers', 'suppliers', 'expenses', 'loans',
-          'warehouses', 'transfers', 'auditLogs', 'invoices', 'deliveryOrders',
-          'payments', 'returns', 'affiliates', 'commissionRules', 'commissionLedger',
-          'subscriptionInvoices', 'variants'
-        ];
-
-        let hasLocalUnsynced = false;
-        const missingChanges: any[] = [];
-
-        for (const field of arrayFields) {
-          const serverList = (serverData[field] as any[]) || [];
-          const localList = (currentLocal[field] as any[]) || (prev[field] as any[]) || [];
-          if (localList.length > 0) {
-            const serverIds = new Set(serverList.map((item: any) => item.id));
-            const localOnly = localList.filter((item: any) => item && item.id && !serverIds.has(item.id));
-            if (localOnly.length > 0) {
-              (merged as any)[field] = [...serverList, ...localOnly];
-              hasLocalUnsynced = true;
-              localOnly.forEach(item => {
-                missingChanges.push({
-                  table: field,
-                  recordId: item.id,
-                  operation: 'CREATE',
-                  data: item
-                });
-              });
-            }
-          }
-        }
-
-        if (hasLocalUnsynced && missingChanges.length > 0) {
-          pushBatchToFirestore(missingChanges)
-            .then(res => {
-              if (res.success > 0) {
-                console.log(`[SYNC] ${res.success} éléments locaux synchronisés vers Firestore`);
-              }
-            })
-            .catch(err =>
-              console.warn('[SYNC] Erreur synchro auto des éléments locaux vers Firestore:', err)
-            );
-        }
-
-        persistCache(merged);
-        return merged;
-      });
-
-      setSyncError(false);
-    } catch (err: any) {
-      const isOfflineErr =
-        err?.message?.includes('offline') ||
-        err?.message?.includes('unavailable') ||
-        err?.message?.includes('permission-denied');
-
-      if (!isOfflineErr) {
-        setSyncError(true);
-        if (err?.message?.includes('401') || err?.message?.includes('Token')) {
-          addNotification('Session expirée. Veuillez vous reconnecter.', 'error');
-        } else {
-          console.error('fetchServerState failed:', err?.message || err);
-          addNotification('Erreur de synchronisation. Réessayez plus tard.', 'error');
-        }
-      } else {
-        console.info('[SYNC] Mode local résilient actif (Firestore inaccessible).');
-        setSyncError(false);
+      if (changes.length > 0) {
+        await enqueueChanges(changes, { ownerUid: s.uid, deviceId, userId: s.userId });
+        void flush();
+        addNotification(`${changes.length} enregistrement(s) local(aux) absent(s) du serveur placé(s) en quarantaine pour vérification.`, 'warning');
       }
+      await cacheRemove(LEGACY_CACHE_KEY);
+    } catch (err) {
+      console.warn('[MIGRATION] Analyse de l\'ancien cache impossible :', err);
     }
-  }, [persistCache, addNotification]);
+  }, [addNotification, flush]);
 
-  const flushNow = useCallback(async () => {
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
+  /**
+   * Point d'entrée des écrans : créations et modifications déduites champ par champ.
+   */
+  const handleUpdateDb = useCallback(async (nextDb: DBState) => {
+    const s = scopeRef.current;
+    if (!s) {
+      addNotification('Session expirée : reconnectez-vous pour enregistrer.', 'error');
+      return;
     }
-    await flushPendingChanges();
-    const pullResult = await pullRemoteChanges();
-    if (pullResult) {
-      setDb(prev => {
-        let merged = deepMergeDbState(prev, pullResult.changes, pullResult.deletions);
-        if (pullResult.globalSaaSSettings) {
-          merged = { ...merged, globalSaaSSettings: pullResult.globalSaaSSettings };
-        }
-        if (pullResult.saasCurrency) {
-          merged = { ...merged, saasCurrency: pullResult.saasCurrency };
-        }
-        persistCache(merged);
-        return merged;
-      });
-    }
-  }, [persistCache]);
+    const prev = dbRef.current;
+    const known = knownRecordsRef.current;
+    let changes = extractRecordChanges(
+      prev as unknown as Record<string, unknown>,
+      nextDb as unknown as Record<string, unknown>,
+      SYNCED_FIELDS,
+      s.tenantId,
+      r => known.has(r),
+    );
 
-  const incrementalSync = useCallback(async (nextDb: DBState) => {
+    // Garde-fou de périmètre : un utilisateur de boutique ne peut écrire que chez lui.
+    if (!s.isSuperAdmin) {
+      const rejected = changes.filter(c => !GLOBAL_TABLES.has(c.table) && c.tenantId !== s.tenantId);
+      if (rejected.length > 0) {
+        console.warn('[SYNC] Modifications hors de la boutique ignorées :', rejected.map(c => `${c.table}/${c.recordId}`));
+      }
+      changes = changes.filter(c => GLOBAL_TABLES.has(c.table) ? (c.table === 'tenants' && c.recordId === s.tenantId) : c.tenantId === s.tenantId);
+    }
+
+    // Paramètres SaaS globaux (super admin uniquement)
+    const settingsChanged = Boolean(nextDb.globalSaaSSettings) && !deepEqual(nextDb.globalSaaSSettings, prev.globalSaaSSettings);
+    const currencyChanged = Boolean(nextDb.saasCurrency) && nextDb.saasCurrency !== prev.saasCurrency;
+    if ((settingsChanged || currencyChanged) && s.isSuperAdmin) {
+      const effectiveCurrency = nextDb.saasCurrency || nextDb.globalSaaSSettings?.saasCurrency || 'EUR';
+      saveGlobalSaaSSettingsToFirestore({ ...(nextDb.globalSaaSSettings || {}), saasCurrency: effectiveCurrency }, effectiveCurrency)
+        .catch(err => {
+          console.error('[SYNC] Échec sauvegarde paramètres SaaS :', err);
+          addNotification('Échec de l\'enregistrement des paramètres SaaS.', 'error');
+        });
+    }
+
+    const nowIso = new Date().toISOString();
+    setDb(current => {
+      let next = applyChangesToState(current, changes, nowIso);
+      if ((settingsChanged || currencyChanged) && s.isSuperAdmin) {
+        next = { ...next, globalSaaSSettings: nextDb.globalSaaSSettings, saasCurrency: nextDb.saasCurrency };
+      }
+      return next;
+    });
+
+    if (changes.length === 0) return;
     setIsSyncing(true);
     try {
-      const prevDb = dbRef.current;
-      const changes = extractChanges(prevDb, nextDb);
-
-      for (const change of changes) {
-        enqueueChange(change);
-      }
-
-      // Synchronisation directe et instantanée vers Firestore pour les forfaits et coordonnées
-      if (isOnline) {
-        const currencyChanged = Boolean(nextDb.saasCurrency && nextDb.saasCurrency !== prevDb.saasCurrency);
-        const settingsChanged = Boolean(
-          (nextDb.globalSaaSSettings && JSON.stringify(nextDb.globalSaaSSettings) !== JSON.stringify(prevDb.globalSaaSSettings)) ||
-          currencyChanged
-        );
-
-        if (settingsChanged) {
-          const effectiveCurrency = nextDb.saasCurrency || nextDb.globalSaaSSettings?.saasCurrency || 'EUR';
-          saveGlobalSaaSSettingsToFirestore({
-            ...(nextDb.globalSaaSSettings || {}),
-            saasCurrency: effectiveCurrency
-          }, effectiveCurrency).catch(err => {
-            console.error('[SYNC] Échec sauvegarde directe paramètres SaaS:', err);
-          });
-        }
-        if (nextDb.pricingPlans && JSON.stringify(nextDb.pricingPlans) !== JSON.stringify(prevDb.pricingPlans)) {
-          savePricingPlansToFirestore(nextDb.pricingPlans).catch(err => {
-            console.error('[SYNC] Échec sauvegarde directe grille forfaits:', err);
-          });
-        }
-
-        if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = setTimeout(() => {
-          flushNow();
-        }, 400);
-      }
-
-      setDb(nextDb);
-      persistCache(nextDb);
+      await enqueueChanges(changes, { ownerUid: s.uid, deviceId: getDeviceId(), userId: s.userId });
       setSyncError(false);
-    } catch (error: any) {
-      console.error('Sync error:', error?.message || error);
+      await flush();
+    } catch (err) {
+      console.error('[SYNC] Enregistrement local impossible :', err);
       setSyncError(true);
+      addNotification('Enregistrement local impossible (stockage du navigateur indisponible). La modification risque d\'être perdue.', 'error');
     } finally {
       setIsSyncing(false);
     }
-  }, [persistCache, isOnline, flushNow]);
+  }, [addNotification, flush]);
 
-  // Écouteur Firestore temps réel sur toutes les entités
-  useEffect(() => {
-    const unsub = subscribeToFirestoreChanges((incoming) => {
-      setDb(prev => {
-        const next = { ...prev, ...incoming };
-        persistCache(next);
-        return next;
-      });
-    });
-    return () => {
-      unsub();
-    };
-  }, [persistCache]);
-
-  useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      // 1. Charger immédiatement le cache IndexedDB / Dexie et synchroniser la référence en mémoire
-      try {
-        const cached = await dexieGet(LOCAL_CACHE_KEY);
-        if (cached && isMounted) {
-          const parsed: DBState = JSON.parse(cached);
-          if (parsed && Array.isArray(parsed.tenants) && parsed.tenants.length > 0) {
-            setDb(parsed);
-            dbRef.current = parsed;
-          }
+  /** Suppression explicite et logique (deletedAt). */
+  const handleDeleteRecords = useCallback(async (field: keyof DBState, ids: string[]) => {
+    const s = scopeRef.current;
+    if (!s || ids.length === 0) return;
+    const list = (dbRef.current[field] as unknown as Record<string, unknown>[] | undefined) || [];
+    const changes: RecordChange[] = [];
+    for (const id of ids) {
+      const rec = list.find(r => String(r.id) === id);
+      const tenantId = (rec?.tenantId as string | undefined) ?? (field === 'tenants' ? id : s.tenantId);
+      if (!s.isSuperAdmin && tenantId !== s.tenantId) continue;
+      const del = buildSoftDelete(String(field), id, tenantId ?? null);
+      if (field === 'users') del.fields.active = { kind: 'set', value: false };
+      changes.push(del);
+    }
+    if (changes.length === 0) return;
+    const nowIso = new Date().toISOString();
+    setDb(current => applyChangesToState(current, changes, nowIso));
+    try {
+      await enqueueChanges(changes, { ownerUid: s.uid, deviceId: getDeviceId(), userId: s.userId });
+      await flush();
+    } catch (err) {
+      console.error('[SYNC] Suppression non enregistrée :', err);
+      addNotification('La suppression n\'a pas pu être enregistrée localement.', 'error');
+      return;
+    }
+    if (field === 'users') {
+      // Révocation de l'accès : suppression des liens Auth -> fiche utilisateur (en ligne).
+      for (const id of ids) {
+        try {
+          const constraints = s.isSuperAdmin
+            ? [where('userId', '==', id)]
+            : [where('userId', '==', id), where('tenantId', '==', s.tenantId)];
+          const links = await getDocs(query(collection(firestore, 'authLinks'), ...constraints));
+          await Promise.all(links.docs.map(d => deleteDoc(d.ref)));
+        } catch (err) {
+          console.warn('[AUTH] Révocation du lien impossible (sera à refaire en ligne) :', err);
+          addNotification('Compte désactivé localement ; la révocation de l\'accès nécessite une connexion Internet.', 'warning');
         }
-      } catch (err) {
-        console.warn('[CACHE] Erreur lecture cache IndexedDB initial:', err);
       }
+    }
+  }, [addNotification, flush]);
 
-      // 2. Ensuite lancer le chargement serveur avec la certitude que dbRef.current détient l'état local
-      if (isMounted) {
-        await loadStateFromServer();
-      }
-    })();
+  const handleSyncFromServer = useCallback(async (): Promise<SyncResult> => {
+    setIsSyncing(true);
+    try {
+      const { issued } = await flush();
+      let acknowledged = false;
+      try {
+        await Promise.race([
+          waitForPendingWrites(firestore).then(() => { acknowledged = true; }),
+          new Promise(resolve => setTimeout(resolve, 15_000)),
+        ]);
+      } catch { /* ignore */ }
+      const stats = await getOutboxStats(scopeRef.current?.uid ?? null);
+      setOutboxStats(stats);
+      return { issued, acknowledged, pending: stats.pending + stats.sent, dead: stats.dead };
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [flush]);
 
-    const handleOnline = () => { setIsOnline(true); setSyncError(false); };
-    const handleOffline = () => { setIsOnline(false); };
+  const clearLocalData = useCallback(async () => {
+    const uid = scopeRef.current?.uid;
+    if (uid) await cacheRemove(userCacheKey(uid));
+    await cacheRemove(LEGACY_CACHE_KEY);
+    setDb(EMPTY_DB_STATE);
+  }, []);
+
+  const getUnsyncedOperationsCount = useCallback(
+    () => getUnsyncedCount(scopeRef.current?.uid ?? null),
+    [],
+  );
+
+  // Réseau : envoi immédiat au retour de la connexion ; nouvel essai périodique (backoff géré par la file).
+  useEffect(() => {
+    const handleOnline = () => { setIsOnline(true); setSyncError(false); void flush(); };
+    const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    const interval = setInterval(() => { void flush(); }, 15_000);
     return () => {
-      isMounted = false;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
     };
-  }, [loadStateFromServer]);
+  }, [flush]);
 
+  // Numérotation définitive des ventes encaissées avec un numéro provisoire (SYNC-08).
   useEffect(() => {
-    if (db.tenants?.length > 0) {
-      persistCache(db);
-    }
-  }, [db, persistCache]);
-
-  // Background sync cycle: push pending then pull remote
-  useEffect(() => {
-    if (!isOnline) return;
-    const interval = setInterval(async () => {
-      try {
-        const count = await getPendingCount();
-        if (count > 0) {
-          await flushNow();
-        } else {
-          const pullResult = await pullRemoteChanges();
-          if (pullResult && (Object.keys(pullResult.changes).length > 0 || Object.keys(pullResult.deletions).length > 0)) {
-            setDb(prev => {
-              const merged = deepMergeDbState(prev, pullResult.changes, pullResult.deletions);
-              persistCache(merged);
-              return merged;
-            });
-          }
-        }
-      } catch (error: any) {
-        const isOfflineErr =
-          error?.message?.includes('offline') ||
-          error?.message?.includes('unavailable') ||
-          error?.message?.includes('permission-denied');
-        if (!isOfflineErr) {
-          console.error('Background sync cycle failed:', error?.message || error);
+    if (!scopeUid || !scopeTenant) return;
+    const tick = async () => {
+      if (!navigator.onLine) return;
+      const provisional = (dbRef.current.sales || []).filter(
+        sale => (sale as Sale & { numberStatus?: string }).numberStatus === 'provisional' && sale.tenantId === scopeTenant,
+      );
+      for (const sale of provisional.slice(0, 20)) {
+        try {
+          await finalizeInvoiceNumber({ tenantId: scopeTenant, saleId: sale.id, prefix: invoicePrefixOf(sale.invoiceNumber) });
+        } catch (err) {
+          // Vente pas encore reçue par le serveur, ou hors ligne : nouvel essai au prochain cycle.
+          console.debug('[NUMEROTATION] Report :', sale.id, (err as Error)?.message);
+          break;
         }
       }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [isOnline, persistCache, flushNow]);
+    };
+    const interval = setInterval(() => { void tick(); }, 60_000);
+    const first = setTimeout(() => { void tick(); }, 10_000);
+    return () => { clearInterval(interval); clearTimeout(first); };
+  }, [scopeUid, scopeTenant]);
 
-  const handleUpdateDb = useCallback((nextDb: DBState) => {
-    incrementalSync(nextDb);
-  }, [incrementalSync]);
+  const connectionState: ConnectionState = !isOnline
+    ? 'offline'
+    : outboxStats.oldestSentAt && Date.now() - Date.parse(outboxStats.oldestSentAt) > 60_000
+      ? 'degraded'
+      : 'online';
+
+  useEffect(() => {
+    if (!firestorePersistenceEnabled && scopeUid) {
+      addNotification('Mode hors ligne limité : le stockage persistant du navigateur est indisponible.', 'warning');
+    }
+  }, [scopeUid, addNotification]);
 
   const handleProductsUpdate = useCallback((nextProducts: Product[]) => {
-    const nextDb = { ...db, products: nextProducts };
-    incrementalSync(nextDb);
-  }, [db, isOnline]);
+    void handleUpdateDb({ ...dbRef.current, products: nextProducts });
+  }, [handleUpdateDb]);
 
   const handleAddSale = useCallback((newSale: Sale, nextProducts: Product[], nextCustomers: Customer[]) => {
-    const nextDb = { ...db, sales: [...db.sales, newSale], products: nextProducts, customers: nextCustomers };
-    incrementalSync(nextDb);
+    const current = dbRef.current;
+    void handleUpdateDb({ ...current, sales: [...current.sales, newSale], products: nextProducts, customers: nextCustomers });
     addNotification(`Nouvelle vente enregistrée : ${newSale.invoiceNumber} (${newSale.customerName})`);
-  }, [db, isOnline, addNotification]);
+  }, [handleUpdateDb, addNotification]);
 
   const handleUpdateExpenses = useCallback((nextExpenses: Expense[]) => {
-    try {
-      const nextDb = { ...db, expenses: nextExpenses };
-      incrementalSync(nextDb);
-      addNotification('Registre des dépenses mis à jour.');
-    } catch (error) {
-      console.error('Erreur lors de la mise à jour des dépenses:', error);
-      addNotification('Erreur lors de la mise à jour des dépenses.', 'error');
-    }
-  }, [db, isOnline, addNotification]);
+    void handleUpdateDb({ ...dbRef.current, expenses: nextExpenses });
+    addNotification('Registre des dépenses mis à jour.');
+  }, [handleUpdateDb, addNotification]);
 
   const handleUpdateLoans = useCallback((nextLoans: Loan[]) => {
-    try {
-      const nextDb = { ...db, loans: nextLoans };
-      incrementalSync(nextDb);
-      addNotification('Tableau des financements mis à jour.');
-    } catch (error) {
-      console.error('Erreur lors de la mise à jour des financements:', error);
-      addNotification('Erreur lors de la mise à jour des financements.', 'error');
-    }
-  }, [db, isOnline, addNotification]);
+    void handleUpdateDb({ ...dbRef.current, loans: nextLoans });
+    addNotification('Tableau des financements mis à jour.');
+  }, [handleUpdateDb, addNotification]);
 
   const handleUpdateCustomers = useCallback((nextCustomers: Customer[]) => {
-    const nextDb = { ...db, customers: nextCustomers };
-    incrementalSync(nextDb);
-  }, [db, isOnline]);
+    void handleUpdateDb({ ...dbRef.current, customers: nextCustomers });
+  }, [handleUpdateDb]);
 
   const handleUpdateSuppliers = useCallback((nextSuppliers: Supplier[]) => {
-    const nextDb = { ...db, suppliers: nextSuppliers };
-    incrementalSync(nextDb);
-  }, [db, isOnline]);
+    void handleUpdateDb({ ...dbRef.current, suppliers: nextSuppliers });
+  }, [handleUpdateDb]);
 
   return (
     <DBContext.Provider value={{
-      db, isSyncing, syncError, isOnline, lastCacheTime, notifications,
-      addNotification, handleUpdateDb, handleProductsUpdate, handleAddSale,
+      db, isSyncing, syncError, isOnline, connectionState, outboxStats, dataReady, lastCacheTime, notifications,
+      addNotification, handleUpdateDb, handleDeleteRecords, handleProductsUpdate, handleAddSale,
       handleUpdateExpenses, handleUpdateLoans, handleUpdateCustomers, handleUpdateSuppliers,
-      handleSyncFromServer: loadStateFromServer,
+      handleSyncFromServer, clearLocalData, getUnsyncedOperationsCount,
     }}>
       {children}
     </DBContext.Provider>

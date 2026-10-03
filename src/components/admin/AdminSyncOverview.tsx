@@ -59,7 +59,7 @@ const formatTime = (value: string | null): string => {
 };
 
 export default function AdminSyncOverview({ overview, loading, error, onRefresh }: AdminSyncOverviewProps) {
-  const { db, isSyncing, syncError, isOnline, lastCacheTime, handleUpdateDb, addNotification } = useDB();
+  const { db, isSyncing, syncError, isOnline, lastCacheTime, handleSyncFromServer, addNotification } = useDB();
   const [manualSyncing, setManualSyncing] = useState(false);
   const [logs, setLogs] = useState<SyncLogEntry[]>([]);
   const [selectedTenantFilter, setSelectedTenantFilter] = useState<string>('ALL');
@@ -81,20 +81,24 @@ export default function AdminSyncOverview({ overview, loading, error, onRefresh 
     setManualSyncing(true);
     const start = Date.now();
     try {
-      addNotification('Synchronisation globale avec Firebase Firestore...', 'info');
-      await handleUpdateDb(db);
+      addNotification('Envoi des modifications en attente vers Firestore...', 'info');
+      const res = await handleSyncFromServer();
+      const ok = res.dead === 0 && res.acknowledged && res.pending === 0;
       logSyncEvent({
         tenantId: 'global_system',
         tenantName: 'Console Super Admin',
-        collection: 'ALL_COLLECTIONS',
-        operation: 'BATCH',
-        status: 'SUCCESS',
-        recordsCount: (db.tenants?.length || 0) + (db.products?.length || 0) + (db.sales?.length || 0),
+        collection: 'OUTBOX',
+        operation: 'PUSH',
+        status: ok ? 'SUCCESS' : res.dead > 0 ? 'ERROR' : 'PENDING',
+        recordsCount: res.issued,
         durationMs: Date.now() - start,
-        details: 'Synchronisation manuelle déclenchée depuis la console de monitoring',
+        details: `${res.issued} opération(s) envoyée(s), ${res.pending} en attente, ${res.dead} en file morte`,
         source: 'Firestore Cloud'
       });
-      addNotification('Synchronisation Cloud terminée avec succès !', 'success');
+      addNotification(
+        ok ? 'Toutes les modifications sont confirmées par le serveur.' : `${res.pending} en attente, ${res.dead} en échec.`,
+        ok ? 'success' : res.dead > 0 ? 'error' : 'warning'
+      );
       onRefresh();
     } catch (err: any) {
       logSyncEvent({

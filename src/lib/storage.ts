@@ -24,17 +24,15 @@ function getDb(): NexaStockDB {
 }
 
 export async function setItem(key: string, value: string): Promise<void> {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(key, value);
-    }
-  } catch {
-    // localStorage full or restricted
-  }
+  // IndexedDB uniquement : plus de copie dans localStorage (quota ~5 Mo, PERF-02 / SEC-06).
   try {
     await getDb().cache.put({ key, value, timestamp: Date.now() });
   } catch {
-    // Dexie fallback
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem(key, value);
+    } catch {
+      // stockage indisponible : le cache d'affichage est facultatif
+    }
   }
 }
 
@@ -51,7 +49,12 @@ export async function removeItem(key: string): Promise<void> {
   try {
     await getDb().cache.delete(key);
   } catch {
+    // ignore
+  }
+  try {
     localStorage.removeItem(key);
+  } catch {
+    // ignore
   }
 }
 

@@ -23,9 +23,10 @@ import { ConfirmDialog } from './shared/ConfirmDialog';
 import ExpenseList from './expenses/ExpenseList';
 import LoansList from './expenses/LoansList';
 import Repayments from './expenses/Repayments';
+import { uuid } from '../lib/ids';
 
 export default function Expenses() {
-  const { db, handleUpdateExpenses, handleUpdateLoans } = useDB();
+  const { db, handleUpdateExpenses, handleUpdateLoans, handleDeleteRecords } = useDB();
   const { activeTenantId } = useApp();
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
 
@@ -125,7 +126,7 @@ export default function Expenses() {
     if (!expenseForm.title.trim() || expenseForm.amount <= 0) return;
 
     const newExpense: Expense = {
-      id: `e-${Date.now()}`,
+      id: `e-${uuid()}`,
       title: expenseForm.title,
       amount: Number(expenseForm.amount),
       category: expenseForm.category,
@@ -160,7 +161,7 @@ export default function Expenses() {
     if (!loanForm.partnerName.trim() || loanForm.amount <= 0) return;
 
     const newLoan: Loan = {
-      id: `l-${Date.now()}`,
+      id: `l-${uuid()}`,
       type: loanForm.type,
       partnerName: loanForm.partnerName,
       amount: Number(loanForm.amount),
@@ -208,7 +209,7 @@ export default function Expenses() {
     const updatedLoans = db.loans.map(l => {
       if (l.id === selectedLoanForRepayment.id) {
         const newRepayment: Repayment = {
-          id: `rep-${Date.now()}`,
+          id: `rep-${uuid()}`,
           amount: repaymentAmount,
           date: repaymentForm.date,
           note: repaymentForm.note || 'Remboursement'
@@ -231,7 +232,7 @@ export default function Expenses() {
     // If recording as expense for cash outflows
     if (recordAsExpense && selectedLoanForRepayment.type === 'entrant') {
       const newExpense: Expense = {
-        id: `e-rep-${Date.now()}`,
+        id: `e-rep-${uuid()}`,
         title: `Remboursement prêt : ${selectedLoanForRepayment.partnerName}`,
         amount: repaymentAmount,
         category: 'Impôts', // fallback to Impôts / generic charges or we can add "Remboursement Prêt"
@@ -294,7 +295,7 @@ export default function Expenses() {
     if (!selectedLoanForInstallment || installmentForm.amount <= 0) return;
 
     const newInstallment: LoanInstallment = {
-      id: `inst-${Date.now()}`,
+      id: `inst-${uuid()}`,
       dueDate: installmentForm.dueDate,
       amount: Number(installmentForm.amount),
       status: 'en_attente' as const,
@@ -352,7 +353,7 @@ export default function Expenses() {
         }
 
         const newRepayment: Repayment = {
-          id: `rep-${Date.now()}`,
+          id: `rep-${uuid()}`,
           amount: repaymentAmount,
           date: repaymentDate,
           note: `Règlement d'échéance (${installment.dueDate})`
@@ -393,8 +394,8 @@ export default function Expenses() {
       title: 'Supprimer un dossier',
       message: 'Voulez-vous supprimer définitivement ce dossier de prêt / dette ?',
       onConfirm: () => {
-        const updated = db.loans.filter(l => l.id !== id);
-        handleUpdateLoans(updated);
+        // Suppression explicite et logique (SYNC-01 / SYNC-05).
+        void handleDeleteRecords('loans', [id]);
         setConfirmAction(prev => ({ ...prev, isOpen: false }));
       }
     });
@@ -406,8 +407,7 @@ export default function Expenses() {
       title: 'Supprimer une dépense',
       message: 'Voulez-vous supprimer cette écriture de dépenses ?',
       onConfirm: () => {
-        const updated = db.expenses.filter(e => e.id !== id);
-        handleUpdateExpenses(updated);
+        void handleDeleteRecords('expenses', [id]);
         setConfirmAction(prev => ({ ...prev, isOpen: false }));
       }
     });

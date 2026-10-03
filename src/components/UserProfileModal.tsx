@@ -6,6 +6,7 @@ import {
   Building2, CheckCircle2
 } from 'lucide-react';
 import { useDB, useApp } from '../context';
+import { changeOwnPassword, authErrorMessage, MIN_PASSWORD_LENGTH } from '../lib/authService';
 import type { UserRole } from '../types';
 
 interface UserProfileModalProps {
@@ -151,13 +152,13 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
     e.preventDefault();
     setError(null);
 
-    if (activeUser.password && currentPassword && activeUser.password !== currentPassword) {
-      setError('Le mot de passe actuel est incorrect.');
+    if (!currentPassword) {
+      setError('Saisissez votre mot de passe actuel.');
       return;
     }
 
-    if (!newPassword || newPassword.length < 4) {
-      setError('Le nouveau mot de passe doit comporter au moins 4 caractères.');
+    if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+      setError(`Le nouveau mot de passe doit comporter au moins ${MIN_PASSWORD_LENGTH} caractères.`);
       return;
     }
 
@@ -168,25 +169,18 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
 
     setSaving(true);
     try {
-      const updatedUsers = db.users.map(u => {
-        if (u.id === activeUser.id) {
-          return {
-            ...u,
-            password: newPassword,
-            firstLoginReset: false
-          };
-        }
-        return u;
-      });
-
-      await handleUpdateDb({ ...db, users: updatedUsers });
+      // SEC-02 : vérification du mot de passe actuel et changement par Firebase Auth.
+      await changeOwnPassword(newPassword, currentPassword);
+      if (activeUser.firstLoginReset) {
+        await handleUpdateDb({ ...db, users: db.users.map(u => u.id === activeUser.id ? { ...u, firstLoginReset: false } : u) });
+      }
       addNotification('Mot de passe modifié avec succès !', 'success');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       onClose();
-    } catch {
-      setError('Erreur lors de la modification du mot de passe.');
+    } catch (err) {
+      setError(authErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -307,7 +301,7 @@ export default function UserProfileModal({ isOpen, onClose }: UserProfileModalPr
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="barry.hassim@gmail.com"
+                      placeholder="nom@entreprise.com"
                       className="w-full bg-gray-950 border border-gray-800 focus:border-blue-500 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white focus:outline-none transition"
                     />
                   </div>

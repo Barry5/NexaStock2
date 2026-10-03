@@ -1,12 +1,16 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import type { TabType, Tenant, User, SubscriptionPlan } from '../types';
-import { loadSession, saveSession } from '../lib/session';
 import { createPlanUpdateMessage, createTenantSwitchMessage, createUserSwitchMessage } from '../lib/appSession';
 import { DBProvider, useDB } from './DBContext';
+import { AuthProvider, useAuth } from './AuthContext';
 import { resetModuleCache } from '../hooks/useModules';
+import { signOutUser } from '../lib/authService';
+
+const TENANT_SELECTION_KEY = 'nexastock_selected_tenant';
 
 interface AppContextValue {
   isLoggedIn: boolean;
+  /** @deprecated la session est pilotée par Firebase Auth ; utiliser `logout()`. */
   setIsLoggedIn: (v: boolean) => void;
   activeTenantId: string;
   setActiveTenantId: (v: string) => void;
@@ -23,114 +27,118 @@ interface AppContextValue {
   handleSwitchTenant: (tenantId: string) => void;
   handleSwitchUser: (userId: string) => void;
   handleUpdateTenantPlan: (tenantId: string, plan: SubscriptionPlan) => void;
-  handleLoginSuccess: (userId: string, tenantId?: string | null) => void;
+  handleLoginSuccess: (userId: string, tenantId?: string | null, _db?: unknown) => void;
   handleRegisterTenant: (newTenant: Tenant, newUser: User) => void;
+  logout: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+function readSelectedTenant(): string {
+  try { return localStorage.getItem(TENANT_SELECTION_KEY) || ''; } catch { return ''; }
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
-  const { db, addNotification, handleUpdateDb } = useDB();
-  const initialSession = loadSession();
-  const [isLoggedIn, setIsLoggedIn] = useState(initialSession.isLoggedIn);
-  const [activeTenantId, setActiveTenantId] = useState(initialSession.activeTenantId);
-  const [activeUserId, setActiveUserId] = useState(initialSession.activeUserId);
+  const { authState } = useAuth();
+  const { db, addNotification, handleUpdateDb, clearLocalData, getUnsyncedOperationsCount, handleSyncFromServer } = useDB();
+
+  // SEC-02 : la session n'est plus lue depuis localStorage ; elle découle du compte Firebase Auth.
+  const link = authState.link;
+  const isLoggedIn = Boolean(link) && (authState.status === 'signedIn' || authState.status === 'loading');
+  const activeUserId = link?.userId || '';
+
+  const [selectedTenantId, setSelectedTenantId] = useState<string>(readSelectedTenant);
   const [currentTab, setCurrentTab] = useState<TabType>('dashboard');
   const [saasSubTab, setSaasSubTab] = useState<string>('stats');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  useEffect(() => {
-    saveSession({ isLoggedIn, activeTenantId, activeUserId });
-  }, [isLoggedIn, activeTenantId, activeUserId]);
+  // Utilisateur de boutique : toujours sa boutique. Super admin : sélection mémorisée.
+  const activeTenantId = link && link.role !== 'superadmin' && link.tenantId ? link.tenantId : selectedTenantId;
+
+  const setActiveTenantId = useCallback((v: string) => {
+    setSelectedTenantId(v);
+    try { localStorage.setItem(TENANT_SELECTION_KEY, v); } catch { /* ignore */ }
+  }, []);
 
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
   const activeUser = useMemo(() => db.users.find(u => u.id === activeUserId), [db.users, activeUserId]);
 
-  // Règle stricte d'isolation : un utilisateur standard est strictement lié à son entreprise unique
+  // Super admin : résolution automatique d'une boutique valide.
   useEffect(() => {
-    if (activeUser && activeUser.role !== 'superadmin' && activeUser.tenantId) {
-      if (activeTenantId !== activeUser.tenantId) {
-        setActiveTenantId(activeUser.tenantId);
-      }
+    if (!link || link.role !== 'superadmin') return;
+    if (db.tenants.length === 0) return;
+    if (!activeTenantId || !db.tenants.some(t => t.id === activeTenantId)) {
+      const tenantWithProducts = db.tenants.find(t => db.products.some(p => p.tenantId === t.id));
+      setActiveTenantId((tenantWithProducts || db.tenants[0]).id);
     }
-  }, [activeUser, activeTenantId]);
-
-  // Résolution automatique de la boutique active : évite d'avoir un activeTenantId vide ou obsolète
-  useEffect(() => {
-    if (db.tenants && db.tenants.length > 0) {
-      const isValid = db.tenants.some(t => t.id === activeTenantId);
-      if (!activeTenantId || !isValid) {
-        // 1. Si utilisateur standard avec tenantId
-        if (activeUser && activeUser.role !== 'superadmin' && activeUser.tenantId && db.tenants.some(t => t.id === activeUser.tenantId)) {
-          setActiveTenantId(activeUser.tenantId);
-          return;
-        }
-        // 2. Préférer en priorité une boutique qui contient déjà des produits enregistrés
-        const tenantWithProducts = db.tenants.find(t => db.products.some(p => p.tenantId === t.id));
-        if (tenantWithProducts) {
-          setActiveTenantId(tenantWithProducts.id);
-          return;
-        }
-        // 3. Sinon première boutique disponible
-        setActiveTenantId(db.tenants[0].id);
-      }
-    }
-  }, [db.tenants, db.products, activeTenantId, activeUser]);
+  }, [link, db.tenants, db.products, activeTenantId, setActiveTenantId]);
 
   const handleSwitchTenant = useCallback((tenantId: string) => {
-    const currentUser = db.users.find(u => u.id === activeUserId);
-    if (currentUser?.role !== 'superadmin') {
+    if (link?.role !== 'superadmin') {
       addNotification("Accès refusé : votre compte est strictement lié à une seule entreprise.", 'error');
       return;
     }
     setActiveTenantId(tenantId);
     const tenantName = db.tenants.find(t => t.id === tenantId)?.name || 'Tenant';
     addNotification(createTenantSwitchMessage(tenantName));
-  }, [db, activeUserId, addNotification]);
+  }, [db.tenants, link, addNotification, setActiveTenantId]);
 
+  /**
+   * L'ancien « changement d'utilisateur » sans mot de passe est supprimé (SEC-02) :
+   * changer d'utilisateur impose une déconnexion puis une connexion.
+   */
   const handleSwitchUser = useCallback((userId: string) => {
-    setActiveUserId(userId);
     const user = db.users.find(u => u.id === userId);
-    if (user) {
-      // Si l'utilisateur basculé n'est pas superadmin, le rattacher directement à son entreprise
-      if (user.role !== 'superadmin' && user.tenantId) {
-        setActiveTenantId(user.tenantId);
-      }
+    if (user && userId !== activeUserId) {
+      addNotification(`Pour utiliser le compte ${user.name}, déconnectez-vous puis connectez-vous avec ses identifiants.`, 'warning');
+    } else if (user) {
       addNotification(createUserSwitchMessage(user.name, user.role));
     }
-  }, [db, addNotification]);
+  }, [db.users, activeUserId, addNotification]);
 
   const handleUpdateTenantPlan = useCallback((tenantId: string, plan: SubscriptionPlan) => {
     const updatedTenants = db.tenants.map(t => t.id === tenantId ? { ...t, plan } : t);
-    handleUpdateDb({ ...db, tenants: updatedTenants });
+    void handleUpdateDb({ ...db, tenants: updatedTenants });
     addNotification(createPlanUpdateMessage(plan));
   }, [db, handleUpdateDb, addNotification]);
 
-  const handleLoginSuccess = useCallback((userId: string, tenantId?: string | null) => {
+  const handleLoginSuccess = useCallback((_userId: string, tenantId?: string | null) => {
     resetModuleCache();
-    setActiveUserId(userId);
-    const user = db.users.find(u => u.id === userId);
-
-    let targetTenantId = (user && user.role !== 'superadmin' && user.tenantId)
-      ? user.tenantId
-      : (tenantId || user?.tenantId || '');
-
-    // Si aucun tenantId spécifique, rechercher en priorité une boutique contenant des produits
-    if (!targetTenantId || !db.tenants.some(t => t.id === targetTenantId)) {
-      const tenantWithProds = db.tenants.find(t => db.products.some(p => p.tenantId === t.id));
-      targetTenantId = tenantWithProds?.id || (db.tenants[0]?.id || '');
-    }
-
-    setActiveTenantId(targetTenantId);
-    setIsLoggedIn(true);
+    if (tenantId) setActiveTenantId(tenantId);
     addNotification('Connexion réussie');
-  }, [db.users, db.tenants, db.products, addNotification]);
+  }, [addNotification, setActiveTenantId]);
 
   const handleRegisterTenant = useCallback((newTenant: Tenant, newUser: User) => {
     setActiveTenantId(newTenant.id);
-    setActiveUserId(newUser.id);
-    addNotification(`Création réussie de ${newTenant.name}`);
-  }, [addNotification]);
+    addNotification(`Création réussie de ${newTenant.name} (${newUser.name})`);
+  }, [addNotification, setActiveTenantId]);
+
+  /** Déconnexion : tente d'envoyer la file locale, avertit s'il reste des opérations, purge le cache (SEC-06). */
+  const logout = useCallback(async () => {
+    try {
+      await handleSyncFromServer();
+      const remaining = await getUnsyncedOperationsCount();
+      if (remaining > 0) {
+        const ok = window.confirm(
+          `${remaining} opération(s) ne sont pas encore confirmées par le serveur. Elles restent enregistrées sur ce poste et seront envoyées à votre prochaine connexion. Se déconnecter quand même ?`,
+        );
+        if (!ok) return;
+      }
+    } catch { /* déconnexion possible même hors ligne */ }
+    await clearLocalData();
+    resetModuleCache();
+    try { localStorage.removeItem('nexastock_session'); localStorage.removeItem('nexastock_token'); } catch { /* ignore */ }
+    await signOutUser();
+    setCurrentTab('dashboard');
+  }, [handleSyncFromServer, getUnsyncedOperationsCount, clearLocalData]);
+
+  const setIsLoggedIn = useCallback((v: boolean) => {
+    if (!v) void logout();
+  }, [logout]);
+
+  const setActiveUserId = useCallback((_v: string) => {
+    // Sans effet : l'utilisateur actif est celui du compte Firebase Auth connecté.
+  }, []);
 
   return (
     <AppContext.Provider value={{
@@ -138,7 +146,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activeUserId, setActiveUserId, currentTab, setCurrentTab,
       saasSubTab, setSaasSubTab, sidebarOpen, setSidebarOpen,
       activeTenant, activeUser, handleSwitchTenant, handleSwitchUser,
-      handleUpdateTenantPlan, handleLoginSuccess, handleRegisterTenant
+      handleUpdateTenantPlan, handleLoginSuccess, handleRegisterTenant, logout,
     }}>
       {children}
     </AppContext.Provider>
@@ -152,3 +160,4 @@ export function useApp() {
 }
 
 export { DBProvider, useDB } from './DBContext';
+export { AuthProvider, useAuth } from './AuthContext';

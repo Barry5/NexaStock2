@@ -41,6 +41,9 @@ import {
 } from 'lucide-react';
 import type { Tenant, User, SubscriptionPlan, UserRole, SubscriptionPayment, PricingPlan } from '../types';
 import { useDB, useApp } from '../context';
+import { provisionUserAccount, sendResetEmail, authErrorMessage, MIN_PASSWORD_LENGTH } from '../lib/authService';
+import { newId, uuid } from '../lib/ids';
+import { compressImageFile } from '../lib/imageCompression';
 import { getTenantPlanStatus, getRemainingDays, getActivePlan, futurePaymentProviders } from '../lib/subscriptionUtils.js';
 import { Modal } from './shared/Modal';
 import { ConfirmDialog } from './shared/ConfirmDialog';
@@ -66,7 +69,7 @@ import {
 
 
 export default function SaaSSettings() {
-  const { db, handleUpdateDb, isSyncing, handleSyncFromServer, addNotification } = useDB();
+  const { db, handleUpdateDb, handleDeleteRecords, isSyncing, handleSyncFromServer, addNotification } = useDB();
   const { activeTenantId, activeUserId, handleSwitchTenant, handleSwitchUser, handleUpdateTenantPlan, setCurrentTab } = useApp();
   
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
@@ -212,20 +215,14 @@ export default function SaaSSettings() {
     }
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // SYNC-04 : logo redimensionné et compressé (limite de 1 Mio par document Firestore).
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        alert("Le logo est trop volumineux. La taille maximale autorisée est de 2 Mo.");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (reader.result) {
-          setShopLogo(reader.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+    try {
+      setShopLogo(await compressImageFile(file, 400));
+    } catch (err) {
+      alert((err as Error).message);
     }
   };
 
@@ -247,7 +244,7 @@ export default function SaaSSettings() {
       };
 
       const audit: any = {
-        id: `aud-${Date.now()}`,
+        id: `aud-${uuid()}`,
         timestamp: new Date().toISOString(),
         userId: activeUserId,
         userName: activeUser?.name || 'Système',
@@ -361,7 +358,7 @@ export default function SaaSSettings() {
     e.preventDefault();
     if (!activeTenant || !paymentTargetPlan) return;
 
-    const paymentId = `pm-${Date.now()}`;
+    const paymentId = `pm-${uuid()}`;
     const newPayment: SubscriptionPayment = {
       id: paymentId,
       tenantId: activeTenantId,
@@ -394,7 +391,7 @@ export default function SaaSSettings() {
     });
 
     const audit: any = {
-      id: `aud-${Date.now()}`,
+      id: `aud-${uuid()}`,
       timestamp: new Date().toISOString(),
       userId: activeUserId,
       userName: activeUser?.name || 'Client',
@@ -423,7 +420,7 @@ export default function SaaSSettings() {
   };
 
   // Manage Enterprise Users (CRUD)
-  const handleCreateUser = (e: React.FormEvent) => {
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeTenant || !newUserName || !newUserEmail || !newUserPassword) return;
 
@@ -432,40 +429,48 @@ export default function SaaSSettings() {
       alert(`Limite de comptes d'utilisateurs atteinte pour votre plan actif (${tenantPlanStatus.users.max} max). Veuillez faire évoluer votre abonnement.`);
       return;
     }
+    if (newUserPassword.length < MIN_PASSWORD_LENGTH) {
+      alert(`Le mot de passe provisoire doit comporter au moins ${MIN_PASSWORD_LENGTH} caractères.`);
+      return;
+    }
 
-    const newId = `u-team-${Date.now()}`;
     const newUserObj: User = {
-      id: newId,
+      id: newId('u'),
       name: newUserName,
-      email: newUserEmail,
+      email: newUserEmail.trim().toLowerCase(),
       role: newUserRole,
       tenantId: activeTenantId,
       active: true,
-      password: newUserPassword,
       firstLoginReset: true // Force password modification on first connection
     };
 
+    try {
+      // SEC-02 : compte Firebase Auth + lien ; le mot de passe n'est jamais stocké dans Firestore.
+      await provisionUserAccount(newUserObj, newUserPassword);
+    } catch (err) {
+      alert(authErrorMessage(err));
+      return;
+    }
+
     const audit: any = {
-      id: `aud-${Date.now()}`,
+      id: newId('aud'),
       timestamp: new Date().toISOString(),
       userId: activeUserId,
       userName: activeUser?.name || 'Admin',
       action: 'TEAM_USER_CREATED',
-      details: `Création du collaborateur ${newUserName} (${newUserRole}). Premier mot de passe configuré.`,
+      details: `Création du collaborateur ${newUserName} (${newUserRole}). Mot de passe provisoire à changer à la première connexion.`,
       tenantId: activeTenantId
     };
 
-    const nextDb = {
+    await handleUpdateDb({
       ...db,
       users: [...db.users, newUserObj],
       auditLogs: [audit, ...(db.auditLogs || [])]
-    };
-
-    handleUpdateDb(nextDb);
+    });
     setNewUserName('');
     setNewUserEmail('');
     setNewUserPassword('');
-    alert(`Collaborateur ${newUserName} créé avec succès ! Il devra réinitialiser son mot de passe lors de sa première connexion.`);
+    alert(`Collaborateur ${newUserName} créé avec succès ! Il devra changer son mot de passe lors de sa première connexion.`);
   };
 
   const handleDeleteTeamUser = (userId: string, name: string) => {
@@ -478,10 +483,9 @@ export default function SaaSSettings() {
 
   const confirmDeleteTeamUser = () => {
     if (!deleteTeamUserData) return;
-    const nextUsers = db.users.filter(u => u.id !== deleteTeamUserData.id);
 
     const audit: any = {
-      id: `aud-${Date.now()}`,
+      id: newId('aud'),
       timestamp: new Date().toISOString(),
       userId: activeUserId,
       userName: activeUser?.name || 'Admin',
@@ -490,13 +494,9 @@ export default function SaaSSettings() {
       tenantId: activeTenantId
     };
 
-    const nextDb = {
-      ...db,
-      users: nextUsers,
-      auditLogs: [audit, ...(db.auditLogs || [])]
-    };
-
-    handleUpdateDb(nextDb);
+    // Suppression explicite et logique + révocation du lien Auth.
+    void handleDeleteRecords('users', [deleteTeamUserData.id]);
+    void handleUpdateDb({ ...db, auditLogs: [audit, ...(db.auditLogs || [])] });
     setDeleteTeamUserData(null);
   };
 
@@ -507,55 +507,41 @@ export default function SaaSSettings() {
     setShowResetPassword(true);
   };
 
-  const handleConfirmPasswordReset = () => {
+  const handleConfirmPasswordReset = async () => {
     if (!resetPasswordUserId) return;
-    if (resetPasswordValue.length < 4) return;
-    if (resetPasswordValue !== resetPasswordConfirm) return;
-
-    const nextUsers = db.users.map(u => {
-      if (u.id === resetPasswordUserId) {
-        return {
-          ...u,
-          password: resetPasswordValue,
-          firstLoginReset: false
-        };
-      }
-      return u;
-    });
-
     const target = db.users.find(u => u.id === resetPasswordUserId);
+    if (!target) return;
+
+    // SEC-02 : un administrateur ne fixe plus le mot de passe d'un tiers ; un lien de réinitialisation est envoyé.
+    try {
+      await sendResetEmail(target.email);
+    } catch (err) {
+      alert(authErrorMessage(err));
+      return;
+    }
 
     const audit: any = {
-      id: `aud-${Date.now()}`,
+      id: newId('aud'),
       timestamp: new Date().toISOString(),
       userId: activeUserId,
       userName: activeUser?.name || 'Admin',
-      action: 'MOT_DE_PASSE_REINITIALISE_PREMIERE_CONNEXION',
-      details: `Le mot de passe de ${target?.name} a été réinitialisé.`,
+      action: 'MOT_DE_PASSE_REINITIALISATION_ENVOYEE',
+      details: `Lien de réinitialisation envoyé à ${target.name}.`,
       tenantId: activeTenantId
     };
 
-    const nextDb = {
+    void handleUpdateDb({
       ...db,
-      users: nextUsers,
+      users: db.users.map(u => u.id === resetPasswordUserId ? { ...u, firstLoginReset: true } : u),
       auditLogs: [audit, ...(db.auditLogs || [])]
-    };
-
-    handleUpdateDb(nextDb);
+    });
+    addNotification(`Lien de réinitialisation envoyé à ${target.email}.`);
     setShowResetPassword(false);
     setResetPasswordUserId(null);
-    addNotification(`Mot de passe réinitialisé pour ${target?.name}`);
   };
 
-  // Use JWT token role (not UI-switched activeUser) to match server-side auth
-  const jwtRole = useMemo(() => {
-    try {
-      const token = localStorage.getItem('nexastock_token');
-      if (!token) return null;
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      return payload.role as string | null;
-    } catch { return null; }
-  }, []);
+  // Rôle de l'utilisateur authentifié (Firebase Auth) ; les règles Firestore appliquent le contrôle réel.
+  const jwtRole = activeUser?.role ?? null;
   const isBackupAdmin = jwtRole === 'superadmin' || jwtRole === 'owner' || jwtRole === 'admin';
 
   useEffect(() => {
@@ -1032,40 +1018,9 @@ export default function SaaSSettings() {
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-400">
-            Saisir un nouveau mot de passe pour <strong className="text-white">{db.users.find(u => u.id === resetPasswordUserId)?.name}</strong>
+            Un lien de réinitialisation sera envoyé par e-mail à <strong className="text-white">{db.users.find(u => u.id === resetPasswordUserId)?.email}</strong>.
+            Pour des raisons de sécurité, un administrateur ne choisit plus le mot de passe d'un collaborateur.
           </p>
-          <div>
-            <label className="block text-xs text-gray-500 font-semibold mb-1.5">Nouveau mot de passe</label>
-            <div className="relative">
-              <input
-                type={passwordVisible ? 'text' : 'password'}
-                value={resetPasswordValue}
-                onChange={e => setResetPasswordValue(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-brand-blue/60 transition pr-10"
-                placeholder="Minimum 4 caractères"
-              />
-              <button
-                type="button"
-                onClick={() => setPasswordVisible(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-              >
-                {passwordVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 font-semibold mb-1.5">Confirmer le mot de passe</label>
-            <input
-              type="password"
-              value={resetPasswordConfirm}
-              onChange={e => setResetPasswordConfirm(e.target.value)}
-              className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-brand-blue/60 transition"
-              placeholder="Retapez le mot de passe"
-            />
-            {resetPasswordConfirm && resetPasswordValue !== resetPasswordConfirm && (
-              <p className="text-xs text-red-400 mt-1">Les mots de passe ne correspondent pas.</p>
-            )}
-          </div>
           <div className="flex gap-2 pt-2">
             <button
               onClick={() => { setShowResetPassword(false); setResetPasswordUserId(null); }}
@@ -1075,10 +1030,9 @@ export default function SaaSSettings() {
             </button>
             <button
               onClick={handleConfirmPasswordReset}
-              disabled={resetPasswordValue.length < 4 || resetPasswordValue !== resetPasswordConfirm}
               className="flex-1 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-bold rounded-xl transition"
             >
-              Réinitialiser
+              Envoyer le lien
             </button>
           </div>
         </div>

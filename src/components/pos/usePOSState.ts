@@ -6,10 +6,12 @@ import { getTenantPlanStatus } from '../../lib/subscriptionUtils.js';
 import { formatPDFNum, type POSTab } from './posUtils';
 import { filterSalesHistory } from '../../services/posHistory';
 import { buildSaleItems, calculateCheckoutTotals, createInstallments } from '../../services/posCheckout';
+import { newId, uuid } from '../../lib/ids';
+import { provisionalInvoiceNumber } from '../../lib/invoiceNumbering';
 
 export function usePOSState() {
-  const { db, handleAddSale, handleUpdateDb, addNotification } = useDB();
-  const { activeTenantId } = useApp();
+  const { db, handleAddSale, handleUpdateDb, handleUpdateCustomers, addNotification } = useDB();
+  const { activeTenantId, activeUser } = useApp();
   const [activeTab, setActiveTab] = useState<POSTab>('vente');
 
   // Tenant Details
@@ -21,9 +23,10 @@ export function usePOSState() {
     return getTenantPlanStatus(activeTenant, db);
   }, [activeTenant, db]);
 
+  // SYNC-14 : le caissier est l'utilisateur authentifié (et non le premier utilisateur de la boutique).
   const currentCashier = useMemo(() => {
-    return db.users.find(u => u.tenantId === activeTenantId) || { id: 'u-1', name: 'Barry Hassim' };
-  }, [db.users, activeTenantId]);
+    return activeUser ? { id: activeUser.id, name: activeUser.name } : { id: 'inconnu', name: 'Utilisateur non identifié' };
+  }, [activeUser]);
 
   const effectiveTenantId = useMemo(() => {
     return activeTenantId || activeTenant?.id || db.tenants[0]?.id || 'tenant-demo';
@@ -270,7 +273,7 @@ export function usePOSState() {
     if (!newCustName.trim()) return;
 
     const newCust: Customer = {
-      id: `c-${Date.now()}`,
+      id: newId('c'),
       name: newCustName,
       phone: newCustPhone,
       email: newCustEmail,
@@ -280,7 +283,8 @@ export function usePOSState() {
       createdAt: new Date().toISOString()
     };
 
-    db.customers.push(newCust);
+    // SYNC-07 : création par le flux de synchronisation (et non par mutation directe de l'état).
+    handleUpdateCustomers([...db.customers, newCust]);
     setSelectedCustomerId(newCust.id);
     setIsAddCustomerOpen(false);
     
@@ -308,7 +312,8 @@ export function usePOSState() {
     }
 
     const todayStr = new Date().toISOString();
-    const invoiceNum = `${saleType === 'ticket' ? 'TK' : 'FAC'}-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+    // SYNC-08 : numéro provisoire unique par poste ; le numéro définitif séquentiel est attribué par le serveur.
+    const invoiceNum = provisionalInvoiceNumber(saleType === 'ticket' ? 'TK' : 'FAC');
 
     const isBrouillon = checkoutInvoiceStatus === 'Brouillon';
 
@@ -327,7 +332,7 @@ export function usePOSState() {
       if (paymentMethod === 'credit') {
         if (amountPaid > 0) {
           paymentsList.push({
-            id: `pay-${Date.now()}-init`,
+            id: `pay-${uuid()}-init`,
             date: todayStr.split('T')[0],
             time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
             amount: amountPaid,
@@ -342,7 +347,7 @@ export function usePOSState() {
         computedCreditStatus = remainingBalance > 0 ? 'Crédit actif' : 'Crédit soldé';
       } else {
         paymentsList.push({
-          id: `pay-${Date.now()}-init`,
+          id: `pay-${uuid()}-init`,
           date: todayStr.split('T')[0],
           time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
           amount: orderTotal,
@@ -360,8 +365,9 @@ export function usePOSState() {
       : (checkoutDeliveryStatus === 'livre_total' ? 'Livrée' : 'Non livrée');
 
     const finalSale: Sale = {
-      id: `sa-${Date.now()}`,
+      id: newId('sa'),
       invoiceNumber: invoiceNum,
+      numberStatus: 'provisional',
       date: todayStr,
       items: saleItems,
       subtotal: cartSubtotal,
@@ -465,11 +471,15 @@ export function usePOSState() {
       return;
     }
 
+    // Nouvelle numérotation facture : provisoire, puis définitive attribuée par le serveur.
+    const factureNumber = provisionalInvoiceNumber('FAC');
     const updatedSales = db.sales.map(s => {
       if (s.id === sale.id) {
         return {
           ...s,
-          invoiceNumber: `FAC-${s.invoiceNumber.slice(3)}`,
+          invoiceNumber: factureNumber,
+          numberStatus: 'provisional' as const,
+          provisionalNumber: s.invoiceNumber,
           saleType: 'facture',
           customerId: customerObj.id,
           customerName: customerObj.name
@@ -482,7 +492,7 @@ export function usePOSState() {
     handleUpdateDb(nextDb);
     setSelectedSaleDetail({
       ...sale,
-      invoiceNumber: `FAC-${sale.invoiceNumber.slice(3)}`,
+      invoiceNumber: factureNumber,
       saleType: 'facture',
       customerId: customerObj.id,
       customerName: customerObj.name
@@ -625,7 +635,7 @@ export function usePOSState() {
     }
 
     const newPay: PaymentHistoryItem = {
-      id: `pay-${Date.now()}`,
+      id: `pay-${uuid()}`,
       date: new Date().toISOString().split('T')[0],
       time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       amount: amount,
@@ -1066,7 +1076,7 @@ export function usePOSState() {
     const returnValueTotal = returnedItemsList.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
     const newReturnRecord = {
-      id: `ret-${Date.now()}`,
+      id: `ret-${uuid()}`,
       date: new Date().toISOString().split('T')[0],
       time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       items: returnedItemsList,

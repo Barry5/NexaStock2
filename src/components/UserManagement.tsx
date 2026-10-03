@@ -5,9 +5,11 @@ import type { User, UserRole, DBState } from '../types';
 import { useDB, useApp } from '../context';
 import { ROLE_SPECS } from '../constants';
 import { ConfirmDialog } from './shared/ConfirmDialog';
+import { provisionUserAccount, sendResetEmail, authErrorMessage, MIN_PASSWORD_LENGTH } from '../lib/authService';
+import { newId } from '../lib/ids';
 
 function UserManagementInner() {
-  const { db, addNotification, handleUpdateDb } = useDB();
+  const { db, addNotification, handleUpdateDb, handleDeleteRecords } = useDB();
   const { activeTenantId, activeUserId } = useApp();
 
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
@@ -57,21 +59,29 @@ function UserManagementInner() {
   };
 
   const handleOpenEdit = (user: User) => {
-    setIsEditing(true); setEditingUserId(user.id); setFormName(user.name); setFormEmail(user.email); setFormRole(user.role); setFormPassword(user.password || ''); setFormActive(user.active); setFormForceReset(user.firstLoginReset || false);
+    setIsEditing(true); setEditingUserId(user.id); setFormName(user.name); setFormEmail(user.email); setFormRole(user.role); setFormPassword(''); setFormActive(user.active); setFormForceReset(user.firstLoginReset || false);
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!isAuthorized) { alert("Habilitations insuffisantes."); return; }
     if (!formName.trim() || !formEmail.trim()) { alert("Veuillez remplir le nom et l'email."); return; }
 
     if (!isEditing) {
       if (db.users.some(u => u.tenantId === activeTenantId && u.email.toLowerCase() === formEmail.toLowerCase())) { alert("Email déjà utilisé."); return; }
-      const newUserId = `u-${Date.now()}`;
-      const newUserObj: User = { id: newUserId, name: formName.trim(), email: formEmail.trim().toLowerCase(), role: formRole, tenantId: activeTenantId, active: formActive, password: formPassword || 'Nexa2026!', firstLoginReset: formForceReset };
-      const auditLog = { id: `aud-${Date.now()}`, timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_CREE', details: `Création : ${newUserObj.name} (${newUserObj.role})`, tenantId: activeTenantId };
-      handleUpdateDb({ ...db, users: [...db.users, newUserObj], auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
-      addNotification(`Collaborateur créé : ${newUserObj.name} (${newUserObj.role})`);
+      if (formPassword.length < MIN_PASSWORD_LENGTH) { alert(`Mot de passe provisoire requis (${MIN_PASSWORD_LENGTH} caractères minimum). Utilisez le générateur.`); return; }
+      const newUserId = newId('u');
+      // SEC-02 : aucun mot de passe dans la fiche ; compte Firebase Auth créé à part.
+      const newUserObj: User = { id: newUserId, name: formName.trim(), email: formEmail.trim().toLowerCase(), role: formRole, tenantId: activeTenantId, active: formActive, firstLoginReset: formForceReset };
+      try {
+        await provisionUserAccount(newUserObj, formPassword);
+      } catch (err) {
+        alert(authErrorMessage(err));
+        return;
+      }
+      const auditLog = { id: newId('aud'), timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_CREE', details: `Création : ${newUserObj.name} (${newUserObj.role})`, tenantId: activeTenantId };
+      await handleUpdateDb({ ...db, users: [...db.users, newUserObj], auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
+      addNotification(`Collaborateur créé : ${newUserObj.name} (${newUserObj.role}). Communiquez-lui son mot de passe provisoire.`);
       handleOpenCreate();
     } else {
       if (!editingUserId) return;
@@ -79,9 +89,18 @@ function UserManagementInner() {
         if (!formActive) { alert("Vous ne pouvez pas désactiver votre propre compte."); return; }
         if (formRole !== currentUser?.role) { alert("Vous ne pouvez pas modifier votre propre rôle."); return; }
       }
-      const updatedUsers = db.users.map(u => u.id === editingUserId ? { ...u, name: formName.trim(), email: formEmail.trim().toLowerCase(), role: formRole, active: formActive, ...(formPassword ? { password: formPassword } : {}), firstLoginReset: formForceReset } : u);
-      const auditLog = { id: `aud-${Date.now()}`, timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_MODIFIE', details: `Modification ID: ${editingUserId}. Rôle : ${formRole}`, tenantId: activeTenantId };
-      handleUpdateDb({ ...db, users: updatedUsers, auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
+      const updatedUsers = db.users.map(u => u.id === editingUserId ? { ...u, name: formName.trim(), email: formEmail.trim().toLowerCase(), role: formRole, active: formActive, firstLoginReset: formForceReset } : u);
+      const auditLog = { id: newId('aud'), timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_MODIFIE', details: `Modification ID: ${editingUserId}. Rôle : ${formRole}`, tenantId: activeTenantId };
+      await handleUpdateDb({ ...db, users: updatedUsers, auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
+      if (formPassword) {
+        // Un administrateur ne fixe plus le mot de passe d'un tiers : envoi d'un lien de réinitialisation.
+        try {
+          await sendResetEmail(formEmail.trim().toLowerCase());
+          addNotification(`Lien de réinitialisation du mot de passe envoyé à ${formEmail.trim()}.`);
+        } catch (err) {
+          addNotification(authErrorMessage(err), 'error');
+        }
+      }
       addNotification(`Compte mis à jour : ${formName}`);
       handleOpenCreate();
     }
@@ -250,8 +269,10 @@ function UserManagementInner() {
         confirmLabel="Supprimer"
         onConfirm={() => {
           if (!deleteUserData) return;
-          const auditLog = { id: `aud-${Date.now()}`, timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_SUPPRIME', details: `Suppression : ${deleteUserData.name}`, tenantId: activeTenantId };
-          handleUpdateDb({ ...db, users: db.users.filter(u => u.id !== deleteUserData.id), auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
+          const auditLog = { id: newId('aud'), timestamp: new Date().toISOString(), userId: activeUserId, userName: currentUser?.name || 'Admin', action: 'UTILISATEUR_SUPPRIME', details: `Suppression : ${deleteUserData.name}`, tenantId: activeTenantId };
+          // Suppression explicite et logique + révocation du lien Auth (SYNC-05, SEC-04).
+          void handleDeleteRecords('users', [deleteUserData.id]);
+          void handleUpdateDb({ ...db, auditLogs: [auditLog, ...(db.auditLogs || [])] } as DBState);
           addNotification(`Accès révoqué pour : ${deleteUserData.name}`);
           if (editingUserId === deleteUserData.id) handleOpenCreate();
           setDeleteUserData(null);

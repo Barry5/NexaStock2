@@ -1,4 +1,5 @@
 import { type FormEvent, type ChangeEvent, type ReactNode } from 'react';
+import { compressImageFile } from '../../lib/imageCompression';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle } from 'lucide-react';
 import type { Product } from '../../types';
@@ -52,16 +53,14 @@ export default function ProductFormModal({
     onClearError?.(field);
   };
 
-  const handleImageFile = (e: ChangeEvent<HTMLInputElement>) => {
+  // SYNC-04 : image redimensionnée et compressée (limite de 1 Mio par document Firestore).
+  const handleImageFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.size <= 2 * 1024 * 1024) {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        if (ev.target?.result) updateField('image', ev.target.result as string);
-      };
-      reader.readAsDataURL(file);
-    } else if (file) {
-      alert("L'image ne doit pas dépasser 2 Mo.");
+    if (!file) return;
+    try {
+      updateField('image', await compressImageFile(file));
+    } catch (err) {
+      alert((err as Error).message);
     }
   };
 

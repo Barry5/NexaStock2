@@ -16,9 +16,10 @@ import VariantFormModal from './products/VariantFormModal';
 import BarcodeScannerModal from './products/BarcodeScannerModal';
 import CategoryManagerModal from './products/CategoryManagerModal';
 import { ConfirmDialog } from './shared/ConfirmDialog';
+import { uuid } from '../lib/ids';
 
 export default function Products() {
-  const { db, handleUpdateDb, handleSyncFromServer, addNotification } = useDB();
+  const { db, handleUpdateDb, handleDeleteRecords, handleSyncFromServer, addNotification } = useDB();
   const { activeTenantId, handleSwitchTenant } = useApp();
 
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
@@ -83,7 +84,7 @@ export default function Products() {
     const targetTenantId = effectiveTenantId;
     const sampleProducts: Product[] = [
       {
-        id: `prod-demo-${Date.now()}-1`,
+        id: `prod-demo-${uuid()}-1`,
         name: 'Smartphone Pro 5G 128Go',
         sku: 'SKU-PHONE-5G',
         barcode: '3301234567890',
@@ -97,7 +98,7 @@ export default function Products() {
         createdAt: new Date().toISOString()
       },
       {
-        id: `prod-demo-${Date.now()}-2`,
+        id: `prod-demo-${uuid()}-2`,
         name: 'Ordinateur Portable Ultra 14"',
         sku: 'SKU-LAPTOP-14',
         barcode: '3309876543210',
@@ -111,7 +112,7 @@ export default function Products() {
         createdAt: new Date().toISOString()
       },
       {
-        id: `prod-demo-${Date.now()}-3`,
+        id: `prod-demo-${uuid()}-3`,
         name: 'Casque Audio Sans Fil Réduction Bruit',
         sku: 'SKU-AUDIO-ANC',
         barcode: '3305556667778',
@@ -125,7 +126,7 @@ export default function Products() {
         createdAt: new Date().toISOString()
       },
       {
-        id: `prod-demo-${Date.now()}-4`,
+        id: `prod-demo-${uuid()}-4`,
         name: 'T-Shirt Coton Bio Unisexe',
         sku: 'SKU-TSHIRT-BIO',
         barcode: '3304443332221',
@@ -335,7 +336,7 @@ export default function Products() {
       });
     } else {
       const newProduct: Product = {
-        id: `p-${Date.now()}`,
+        id: `p-${uuid()}`,
         name: formData.name,
         sku: formData.sku,
         barcode: formData.barcode,
@@ -386,7 +387,7 @@ export default function Products() {
     if (!warehouseName) return;
 
     const newWarehouse: Warehouse = {
-      id: `w-${Date.now()}`,
+      id: `w-${uuid()}`,
       name: warehouseName,
       location: warehouseLocation,
       tenantId: effectiveTenantId
@@ -408,7 +409,7 @@ export default function Products() {
     if (!variantProductId || !variantName) return;
 
     const newVariant: ProductVariant = {
-      id: `v-${Date.now()}`,
+      id: `v-${uuid()}`,
       productId: variantProductId,
       name: variantName,
       sku: variantSku || `V-${Math.floor(Math.random() * 90000)}`,
@@ -457,7 +458,7 @@ export default function Products() {
     });
 
     const newTransfer: StockTransfer = {
-      id: `tr-${Date.now()}`,
+      id: `tr-${uuid()}`,
       productId: selectedProductId,
       productName: product.name,
       fromWarehouseId,
@@ -683,12 +684,7 @@ export default function Products() {
         message="Voulez-vous vraiment supprimer ce produit de l'inventaire ?"
         confirmLabel="Supprimer"
         onConfirm={() => {
-          const updatedProducts = db.products.filter(p => p.id !== deleteProductId);
-          if (handleUpdateDb) {
-            handleUpdateDb({ ...db, products: updatedProducts });
-          } else {
-            handleUpdateDb({ ...db, products: updatedProducts });
-          }
+          if (deleteProductId) void handleDeleteRecords('products', [deleteProductId]);
           setDeleteProductId(null);
         }}
         onCancel={() => setDeleteProductId(null)}

@@ -1,4 +1,5 @@
-﻿export interface CartLine {
+import { uuid } from '../lib/ids';
+export interface CartLine {
   product: { id: string; name: string; quantity: number; sellPrice: number };
   quantity: number;
   negotiatedPrice: number;
@@ -78,7 +79,7 @@ export function createInstallments(remainingBalance: number, installmentsCount: 
     const installmentDate = new Date(d);
     installmentDate.setDate(installmentDate.getDate() + (i * 30));
     installments.push({
-      id: `inst-${Date.now()}-${i}`,
+      id: `inst-${uuid()}-${i}`,
       amount: i === installmentsCount - 1 ? (remainingBalance - (partAmount * (installmentsCount - 1))) : partAmount,
       dueDate: installmentDate.toISOString().split('T')[0],
       status: 'En attente',

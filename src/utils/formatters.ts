@@ -1,3 +1,4 @@
+import { uuid } from '../lib/ids';
 export function formatCurrency(
   val: number,
   currency: string = 'EUR',
@@ -27,7 +28,7 @@ export function formatTime(dateStr: string, locale: string = 'fr-FR'): string {
 }
 
 export function generateId(prefix: string = 'id'): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  return `${prefix}-${uuid()}`;
 }
 
 export function generateInvoiceNumber(): string {

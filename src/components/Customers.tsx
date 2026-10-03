@@ -8,7 +8,7 @@ import { buildCustomerFromForm, buildSupplierFromForm, createEmptyCustomerForm, 
 import { ConfirmDialog } from './shared/ConfirmDialog';
 
 function CustomersInner() {
-  const { db, handleUpdateCustomers, handleUpdateSuppliers } = useDB();
+  const { db, handleUpdateCustomers, handleUpdateSuppliers, handleDeleteRecords } = useDB();
   const { activeTenantId } = useApp();
 
   const activeTenant = useMemo(() => db.tenants.find(t => t.id === activeTenantId), [db.tenants, activeTenantId]);
@@ -195,8 +195,7 @@ function CustomersInner() {
         message="Voulez-vous supprimer cette fiche ?"
         confirmLabel="Supprimer"
         onConfirm={() => {
-          if (activeTab === 'clients') handleUpdateCustomers(db.customers.filter(c => c.id !== deleteId));
-          else handleUpdateSuppliers(db.suppliers.filter(s => s.id !== deleteId));
+          if (deleteId) void handleDeleteRecords(activeTab === 'clients' ? 'customers' : 'suppliers', [deleteId]);
           setDeleteId(null);
         }}
         onCancel={() => setDeleteId(null)}

@@ -24,13 +24,16 @@ import {
 import type { Tenant, User, SubscriptionPlan, UserRole } from '../types';
 import { useDB, useApp } from '../context';
 import { loginSchema, registerSchema } from '../lib/validation';
+import { signIn, registerTenantOwner, sendResetEmail, changeOwnPassword, authErrorMessage, MIN_PASSWORD_LENGTH } from '../lib/authService';
+import { newId } from '../lib/ids';
 import type { z } from 'zod';
 
 export default function SaaSAuth() {
   const { db, handleUpdateDb } = useDB();
   const { handleLoginSuccess, handleRegisterTenant } = useApp();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'firstLoginReset'>('login');
-  const [selectedPresetUser, setSelectedPresetUser] = useState<string>('');
+  const [registerPasswordConfirm, setRegisterPasswordConfirm] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   // Form states
   const [email, setEmail] = useState('');
@@ -47,20 +50,6 @@ export default function SaaSAuth() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [resetError, setResetError] = useState('');
-
-  // Handle Preset Fast Login for dev/reviewers
-  const handlePresetLogin = (userId: string) => {
-    const user = db.users.find(u => u.id === userId);
-    if (user) {
-      if (user.firstLoginReset) {
-        setResettingUser(user);
-        setMode('firstLoginReset');
-        onAddNotificationSimulated(`Première connexion détectée pour ${user.name}. Changement de mot de passe requis.`);
-      } else {
-        handleLoginSuccess(user.id, user.tenantId);
-      }
-    }
-  };
 
   const onAddNotificationSimulated = (text: string) => {
     console.log("SaaS Notification:", text);
@@ -84,116 +73,41 @@ export default function SaaSAuth() {
       return;
     }
 
-    // Authentification via DB/Firestore state ou API
-    const foundUser = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (foundUser) {
-      if (foundUser.password && foundUser.password !== password && !foundUser.password.startsWith('$2')) {
-        setLoginError("Mot de passe incorrect.");
-        return;
-      }
-      
-      // Stocker token
-      localStorage.setItem('nexastock_token', `token-${foundUser.id}-${Date.now()}`);
-
-      if (foundUser.firstLoginReset) {
-        setResettingUser(foundUser);
-        setMode('firstLoginReset');
-      } else {
-        handleLoginSuccess(foundUser.id, foundUser.tenantId, db);
-      }
-      return;
-    }
-
+    // SEC-02 : authentification par Firebase Auth ; aucun mot de passe n'est lu ni comparé côté client.
+    setSubmitting(true);
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.token) {
-          localStorage.setItem('nexastock_token', data.token);
-        }
-
-        if (data.user.firstLoginReset) {
-          const matchedUser = db.users.find((u: any) => u.id === data.user.id) || data.user;
-          setResettingUser(matchedUser);
-          setMode('firstLoginReset');
-        } else {
-          handleLoginSuccess(data.user.id, data.user.tenantId, db);
-        }
-        return;
-      }
-    } catch {
-      // Ignorer erreur serveur si non disponible
+      const link = await signIn(email, password);
+      handleLoginSuccess(link.userId, link.tenantId);
+    } catch (err) {
+      setLoginError(authErrorMessage(err));
+    } finally {
+      setSubmitting(false);
     }
-
-    // Utilisateur non trouvé
-    setLoginError("Identifiants incorrects ou compte inexistant.");
   };
 
-  const handleFirstLoginResetSubmit = (e: React.FormEvent) => {
+  const handleFirstLoginResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resettingUser) return;
-    if (!newPassword || newPassword.length < 4) {
-      setResetError("Le mot de passe doit comporter au moins 4 caractères.");
+    if (!newPassword || newPassword.length < MIN_PASSWORD_LENGTH) {
+      setResetError(`Le mot de passe doit comporter au moins ${MIN_PASSWORD_LENGTH} caractères.`);
       return;
     }
     if (newPassword !== confirmPassword) {
       setResetError("Les deux mots de passe ne correspondent pas.");
       return;
     }
-
-    // Update user password and clear firstLoginReset flag
-    const updatedUsers = db.users.map(u => {
-      if (u.id === resettingUser.id) {
-        return {
-          ...u,
-          password: newPassword,
-          firstLoginReset: false
-        };
-      }
-      return u;
-    });
-
-    const audit: any = {
-      id: `aud-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      userId: resettingUser.id,
-      userName: resettingUser.name,
-      action: 'PASSWORD_RESET_ON_FIRST_LOGIN',
-      details: 'Changement obligatoire de mot de passe lors de la première connexion effectué avec succès.',
-      tenantId: resettingUser.tenantId
-    };
-
-    const nextDb: any = {
-      ...db,
-      users: updatedUsers,
-      auditLogs: [audit, ...(db.auditLogs || [])]
-    };
-
-    setIsSuccess(true);
-    setSuccessMsg(`Votre mot de passe a été sécurisé avec succès ! Initialisation de votre espace client NexaStock...`);
-
-    const syncPromise = handleUpdateDb(nextDb);
-    setTimeout(async () => {
-      try {
-        await syncPromise;
-      } catch {
-        // continue even if sync fails
-      }
-      setIsSuccess(false);
+    try {
+      await changeOwnPassword(newPassword);
+      await handleUpdateDb({ ...db, users: db.users.map(u => u.id === resettingUser.id ? { ...u, firstLoginReset: false } : u) });
       handleLoginSuccess(resettingUser.id, resettingUser.tenantId);
-    }, 2000);
+    } catch (err) {
+      setResetError(authErrorMessage(err));
+    }
   };
 
   const [registerErrors, setRegisterErrors] = useState<Record<string, string>>({});
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegisterErrors({});
 
@@ -211,9 +125,18 @@ export default function SaaSAuth() {
       setRegisterErrors({ adminName: "Le nom de l'administrateur est requis." });
       return;
     }
+    if (!password || password.length < MIN_PASSWORD_LENGTH) {
+      setRegisterErrors({ password: `Le mot de passe doit comporter au moins ${MIN_PASSWORD_LENGTH} caractères.` });
+      return;
+    }
+    if (password !== registerPasswordConfirm) {
+      setRegisterErrors({ password: 'Les deux mots de passe ne correspondent pas.' });
+      return;
+    }
 
-    const newTenantId = `t-${companyName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Math.floor(Math.random() * 900 + 100)}`;
-    const newUserId = `u-${Math.floor(Math.random() * 90000 + 10000)}`;
+    // SYNC-09 : identifiants UUID (plus de suffixe aléatoire à 3 ou 5 chiffres).
+    const newTenantId = newId('t');
+    const newUserId = newId('u');
 
     const trialDays = 14;
     const trialStartDate = new Date().toISOString();
@@ -243,7 +166,7 @@ export default function SaaSAuth() {
       tenantId: newTenantId,
       active: true,
       avatar: '',
-      firstLoginReset: true
+      firstLoginReset: false
     };
 
     // Add some default products for the new tenant to look complete
@@ -251,7 +174,7 @@ export default function SaaSAuth() {
       {
         id: `p-${newTenantId}-1`,
         name: 'Produit Démo Standard A',
-        sku: `SKU-A-${Math.floor(Math.random() * 9000 + 1000)}`,
+        sku: `SKU-A-${newTenantId.slice(-6).toUpperCase()}`,
         barcode: `330${Math.floor(Math.random() * 900000 + 100000)}`,
         description: 'Premier article de démonstration pour votre stock',
         category: 'Général',
@@ -265,7 +188,7 @@ export default function SaaSAuth() {
       {
         id: `p-${newTenantId}-2`,
         name: 'Produit Démo Premium B',
-        sku: `SKU-B-${Math.floor(Math.random() * 9000 + 1000)}`,
+        sku: `SKU-B-${newTenantId.slice(-6).toUpperCase()}`,
         barcode: `330${Math.floor(Math.random() * 900000 + 100000)}`,
         description: 'Deuxième article de démonstration premium',
         category: 'Électronique',
@@ -278,31 +201,49 @@ export default function SaaSAuth() {
       }
     ];
 
-    const nextDb: any = {
-      ...db,
-      tenants: [...db.tenants, newTenant],
-      users: [...db.users, newUser],
-      products: [...db.products, ...defaultProducts],
-      warehouses: [
-        ...(db.warehouses || []),
-        { id: `w-${newTenantId}-1`, name: 'Entrepôt Principal', location: 'Adresse principale', tenantId: newTenantId }
-      ]
-    };
-
+    setSubmitting(true);
+    try {
+      // Compte Auth + boutique + fiche propriétaire + lien, en un seul lot atomique.
+      await registerTenantOwner({ email, password, tenant: newTenant, user: newUser });
+    } catch (err) {
+      setRegisterErrors({ email: authErrorMessage(err) });
+      setSubmitting(false);
+      return;
+    }
+    setSubmitting(false);
     handleRegisterTenant(newTenant, newUser);
-    handleUpdateDb(nextDb);
     setSuccessMsg(`Félicitations ! L'entreprise "${companyName}" a été créée avec succès sur le plan ${selectedPlan}.`);
     setIsSuccess(true);
+    // Données de démonstration : écrites par le flux normal une fois la session établie.
     setTimeout(() => {
-      handleLoginSuccess(newUser.id, newTenantId, nextDb);
-    }, 2500);
+      void handleUpdateDb({
+        ...db,
+        products: [...db.products, ...defaultProducts],
+        warehouses: [
+          ...(db.warehouses || []),
+          { id: `w-${newTenantId}-1`, name: 'Entrepôt Principal', location: 'Adresse principale', tenantId: newTenantId }
+        ]
+      } as any);
+      handleLoginSuccess(newUser.id, newTenantId);
+    }, 1500);
   };
 
-  const handleForgotSubmit = (e: React.FormEvent) => {
+  const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) return;
+    try {
+      await sendResetEmail(email);
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      // Ne pas révéler si l'adresse existe : seules les erreurs techniques sont affichées.
+      if (code && code !== 'auth/user-not-found') {
+        setLoginError(authErrorMessage(err));
+        setMode('login');
+        return;
+      }
+    }
     setIsSuccess(true);
-    setSuccessMsg(`Un e-mail de réinitialisation de mot de passe a été simulé et envoyé à l'adresse ${email}.`);
+    setSuccessMsg(`Si un compte existe pour ${email}, un e-mail de réinitialisation vient d'être envoyé.`);
     setTimeout(() => {
       setIsSuccess(false);
       setMode('login');
@@ -540,6 +481,36 @@ export default function SaaSAuth() {
                       <p className="text-[10px] text-red-400 font-mono flex items-center gap-1 mt-0.5"><AlertTriangle className="w-3 h-3" /> {registerErrors.email}</p>
                     )}
                   </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-mono font-bold text-gray-400 uppercase">Mot de passe</label>
+                      <input
+                        type="password"
+                        required
+                        autoComplete="new-password"
+                        value={password}
+                        onChange={(e) => { setPassword(e.target.value); setRegisterErrors(prev => { const n = {...prev}; delete n.password; return n; }); }}
+                        placeholder={`${MIN_PASSWORD_LENGTH} caractères minimum`}
+                        className={`w-full bg-gray-950 border rounded-xl px-4 py-2 text-xs text-white placeholder-gray-600 focus:outline-none transition ${registerErrors.password ? 'border-red-500' : 'border-gray-800 focus:border-blue-500'}`}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-mono font-bold text-gray-400 uppercase">Confirmation</label>
+                      <input
+                        type="password"
+                        required
+                        autoComplete="new-password"
+                        value={registerPasswordConfirm}
+                        onChange={(e) => { setRegisterPasswordConfirm(e.target.value); setRegisterErrors(prev => { const n = {...prev}; delete n.password; return n; }); }}
+                        placeholder="Retapez le mot de passe"
+                        className={`w-full bg-gray-950 border rounded-xl px-4 py-2 text-xs text-white placeholder-gray-600 focus:outline-none transition ${registerErrors.password ? 'border-red-500' : 'border-gray-800 focus:border-blue-500'}`}
+                      />
+                    </div>
+                  </div>
+                  {registerErrors.password && (
+                    <p className="text-[10px] text-red-400 font-mono flex items-center gap-1 mt-0.5"><AlertTriangle className="w-3 h-3" /> {registerErrors.password}</p>
+                  )}
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-mono font-bold text-gray-400 uppercase">Choisir un Forfait de Démarrage</label>

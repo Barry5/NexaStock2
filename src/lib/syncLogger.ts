@@ -16,6 +16,11 @@ export interface SyncLogEntry {
   errorMessage?: string;
   details?: string;
   source: 'Firestore Cloud' | 'Dexie Cache';
+  /** Traçabilité (OBS-01) : opération, poste, auteur, nombre d'essais. */
+  operationId?: string;
+  deviceId?: string;
+  userId?: string;
+  attempts?: number;
 }
 
 export interface TenantSyncStatus {
@@ -38,73 +43,21 @@ const MAX_LOGS = 200;
 let logs: SyncLogEntry[] = [];
 const subscribers = new Set<(logs: SyncLogEntry[]) => void>();
 
-// Pre-populate with initial realistic recent sync activity
+// Journal local réel uniquement : plus aucune entrée fabriquée au démarrage (OBS-01).
 function initializeInitialLogs(): SyncLogEntry[] {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        // Purge des entrées de démonstration créées par les anciennes versions.
+        return parsed.filter((l: SyncLogEntry) => !/^log-\d+$/.test(l.id));
+      }
     }
   } catch {
     // Ignore storage parse error
   }
-
-  const now = Date.now();
-  return [
-    {
-      id: `log-${now - 120000}`,
-      timestamp: new Date(now - 120000).toISOString(),
-      tenantId: 'global_system',
-      tenantName: 'Système SaaS Root',
-      collection: 'system/globalSaaSSettings',
-      operation: 'UPDATE',
-      status: 'SUCCESS',
-      recordsCount: 1,
-      durationMs: 42,
-      details: 'Synchronisation des Coordonnées de Règlement & Devise (Orange Money, Mobile Money, Banque)',
-      source: 'Firestore Cloud'
-    },
-    {
-      id: `log-${now - 90000}`,
-      timestamp: new Date(now - 90000).toISOString(),
-      tenantId: 'global_system',
-      tenantName: 'Système SaaS Root',
-      collection: 'pricingPlans',
-      operation: 'BATCH',
-      status: 'SUCCESS',
-      recordsCount: 3,
-      durationMs: 65,
-      details: 'Synchronisation Grille des Forfaits (Free, Standard, Premium)',
-      source: 'Firestore Cloud'
-    },
-    {
-      id: `log-${now - 60000}`,
-      timestamp: new Date(now - 60000).toISOString(),
-      tenantId: 'tenant-demo',
-      tenantName: 'Boutique Principale',
-      collection: 'products',
-      operation: 'PULL',
-      status: 'SUCCESS',
-      recordsCount: 6,
-      durationMs: 38,
-      details: 'Vérification intégrité du catalogue et niveaux de stock',
-      source: 'Firestore Cloud'
-    },
-    {
-      id: `log-${now - 30000}`,
-      timestamp: new Date(now - 30000).toISOString(),
-      tenantId: 'tenant-demo',
-      tenantName: 'Boutique Principale',
-      collection: 'sales',
-      operation: 'REALTIME',
-      status: 'SUCCESS',
-      recordsCount: 1,
-      durationMs: 25,
-      details: 'Flux POS temps réel : écouteur snapshot Firestore actif',
-      source: 'Firestore Cloud'
-    }
-  ];
+  return [];
 }
 
 logs = initializeInitialLogs();
@@ -194,10 +147,10 @@ export function computeTenantSyncStatuses(
       tenantId: t.id,
       tenantName: t.name,
       connectionStatus,
-      lastSyncAt: lastSuccessLog ? lastSuccessLog.timestamp : (tenantLogs[0]?.timestamp || new Date().toISOString()),
-      syncedCollectionsCount: 10,
+      lastSyncAt: lastSuccessLog ? lastSuccessLog.timestamp : null,
+      syncedCollectionsCount: 0,
       totalRecords: dbRecordsPerTenant ? (dbRecordsPerTenant[t.id] || 0) : 0,
-      pendingCount: 0,
+      pendingCount: tenantLogs.filter(l => l.status === 'PENDING').length,
       errorCount: tenantLogs.filter(l => l.status === 'ERROR').length,
       lastErrorMessage: lastErrorLog?.errorMessage,
       firestoreListenerActive: isOnline

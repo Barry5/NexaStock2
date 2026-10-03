@@ -19,6 +19,7 @@ import type {
   Invoice, InvoiceItem, DeliveryOrder, DeliveryOrderItem,
   Payment, ReturnRecord, InvoiceAuditLog
 } from '../types';
+import { uuid } from '../lib/ids';
 
 type InvoicingTab = 'list' | 'create' | 'detail';
 
@@ -36,7 +37,7 @@ function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
 }
 
 function generateId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  return `${prefix}-${uuid()}`;
 }
 
 const statusColors: Record<string, string> = {

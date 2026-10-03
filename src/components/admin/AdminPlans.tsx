@@ -27,6 +27,7 @@ import {
   Save
 } from 'lucide-react';
 import type { PricingPlan } from '../../types';
+import { uuid } from '../../lib/ids';
 
 interface AdminPlansProps {
   localGlobalSaaSSettings: any;
@@ -266,7 +267,7 @@ export default function AdminPlans({
     const target = currentPlans[idx];
     const cloned = {
       ...JSON.parse(JSON.stringify(target)),
-      id: `plan-${Date.now()}`,
+      id: `plan-${uuid()}`,
       name: `${target.name} (Copie)`,
       displayOrder: (target.displayOrder || 0) + 1,
     };
@@ -277,7 +278,7 @@ export default function AdminPlans({
     if (!planModal) return;
     const f = planModal.form;
     const built: PricingPlan = {
-      id: planModal.index === -1 ? `plan-${Date.now()}` : (currentPlans[planModal.index]?.id || `plan-${Date.now()}`),
+      id: planModal.index === -1 ? `plan-${uuid()}` : (currentPlans[planModal.index]?.id || `plan-${uuid()}`),
       name: f.name.trim() || 'Nouveau Forfait',
       description: f.description,
       price: Math.max(0, Number(f.price) || 0),

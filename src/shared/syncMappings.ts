@@ -24,7 +24,7 @@ export const CLIENT_FIELD_TO_TABLE: Record<string, string> = {
   commissionLedger: 'commission_ledger', commissionPayments: 'commission_payments',
   commissionAudit: 'commission_audit', invoiceAuditLogs: 'invoice_audit_log',
   deliveryNoteAudit: 'delivery_note_audit',
-  gdriveTokens: 'gdrive_tokens',
+  // SEC-08 : `gdriveTokens` retiré — des jetons OAuth ne doivent jamais être synchronisés.
   // ✔ P1 : les ventes POS sont portées par le client (DBState.sales) et
   // devaient être poussées — elles étaient TOTALEMENT absentes du mapping.
   sales: 'sales',

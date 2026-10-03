@@ -50,8 +50,14 @@ export interface User {
   tenantId?: string | null;
   active: boolean;
   avatar?: string;
+  /**
+   * @deprecated SEC-02 : les mots de passe ne sont plus stockés dans Firestore (Firebase Auth).
+   * Champ conservé uniquement pour lire d'anciennes données ; il n'est jamais synchronisé.
+   */
   password?: string;
   firstLoginReset?: boolean;
+  /** Identifiant du compte Firebase Auth rattaché. */
+  authUid?: string;
 }
 
 export interface Product {
@@ -102,6 +108,9 @@ export interface SaleReturnItem {
 }
 
 export interface Sale {
+  /** Numérotation : provisoire à l'encaissement, définitive une fois attribuée par le serveur. */
+  numberStatus?: 'provisional' | 'final';
+  provisionalNumber?: string;
   id: string;
   invoiceNumber: string;
   date: string;
@@ -285,6 +294,7 @@ export interface ReturnItem {
 }
 
 export interface InvoiceAuditLog {
+  tenantId?: string;
   id: string;
   invoiceId: string;
   action: string;
@@ -400,6 +410,7 @@ export interface SubscriptionInvoice {
 }
 
 export interface ProductVariant {
+  tenantId?: string;
   id: string;
   productId: string;
   name: string;

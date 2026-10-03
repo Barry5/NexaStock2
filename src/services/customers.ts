@@ -1,4 +1,5 @@
 import type { Customer, Supplier } from '../types';
+import { uuid } from '../lib/ids';
 
 export interface CustomerFormState {
   name: string;
@@ -25,7 +26,7 @@ export function createEmptySupplierForm(): SupplierFormState {
 
 export function buildCustomerFromForm(form: CustomerFormState, tenantId: string): Customer {
   return {
-    id: `c-${Date.now()}`,
+    id: `c-${uuid()}`,
     name: form.name,
     phone: form.phone,
     email: form.email,
@@ -38,7 +39,7 @@ export function buildCustomerFromForm(form: CustomerFormState, tenantId: string)
 
 export function buildSupplierFromForm(form: SupplierFormState, tenantId: string): Supplier {
   return {
-    id: `s-${Date.now()}`,
+    id: `s-${uuid()}`,
     name: form.name,
     contactName: form.contactName,
     phone: form.phone,
