@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import { useDB, useApp } from '../../context';
 import { Cloud, CloudOff, RefreshCw, User as UserIcon, LogOut, ChevronDown, Check, Shield, Building2 } from 'lucide-react';
 import UserProfileModal from '../UserProfileModal';
+import { SyncStatusPanel } from '../sync/SyncStatusPanel';
 
 export function Header() {
-  const { db, isSyncing, syncError, isOnline, handleSyncFromServer, addNotification } = useDB();
+  const { db, isSyncing, syncError, connectionState, outboxStats, handleSyncFromServer, addNotification } = useDB();
   const { activeTenant, activeUser, activeTenantId, handleSwitchTenant, currentTab, logout } = useApp();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [tenantDropdownOpen, setTenantDropdownOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
   const isSuperAdmin = activeUser?.role === 'superadmin';
 
@@ -96,25 +98,38 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Firebase Sync status */}
+          {/* Phase 4 : état réel de la synchronisation (cliquable) */}
           <div className="flex items-center gap-2 bg-gray-950 px-3 py-1.5 rounded-xl border border-gray-800 text-xs font-mono">
-            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-            {isSyncing ? (
-              <span className="text-blue-400 flex items-center gap-1">
-                <RefreshCw className="w-3 h-3 animate-spin" /> Sync...
-              </span>
-            ) : syncError ? (
-              <span className="text-red-400 flex items-center gap-1">
-                <CloudOff className="w-3 h-3" /> Offline
-              </span>
-            ) : (
-              <span 
-                className="text-emerald-400 flex items-center gap-1"
-                title={isSuperAdmin ? 'Canal direct Firestore actif' : 'Données synchronisées en temps réel'}
-              >
-                <Cloud className="w-3 h-3" /> {isSuperAdmin ? 'Firestore' : 'En ligne'}
-              </span>
-            )}
+            <button
+              onClick={() => setSyncPanelOpen(true)}
+              className="flex items-center gap-2"
+              title="Afficher l'état de la synchronisation"
+            >
+              <span className={`w-2 h-2 rounded-full ${connectionState === 'online' ? 'bg-emerald-400' : connectionState === 'degraded' ? 'bg-amber-400 animate-pulse' : 'bg-amber-400'}`} />
+              {isSyncing ? (
+                <span className="text-blue-400 flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Envoi…
+                </span>
+              ) : connectionState === 'offline' ? (
+                <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3 h-3" /> Hors ligne</span>
+              ) : connectionState === 'degraded' ? (
+                <span className="text-amber-400 flex items-center gap-1"><CloudOff className="w-3 h-3" /> Dégradé</span>
+              ) : syncError ? (
+                <span className="text-red-400 flex items-center gap-1"><CloudOff className="w-3 h-3" /> Erreur</span>
+              ) : (
+                <span className="text-emerald-400 flex items-center gap-1"><Cloud className="w-3 h-3" /> En ligne</span>
+              )}
+              {outboxStats.pending + outboxStats.sent > 0 && (
+                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 rounded" title="Modifications non confirmées par le serveur">
+                  {outboxStats.pending + outboxStats.sent}
+                </span>
+              )}
+              {outboxStats.dead > 0 && (
+                <span className="text-[10px] bg-red-500/20 text-red-300 px-1.5 rounded" title="Opérations en file morte">
+                  {outboxStats.dead} !
+                </span>
+              )}
+            </button>
             <button onClick={handleManualSync} title="Synchroniser" className="text-gray-500 hover:text-white transition">
               <RefreshCw className="w-3 h-3" />
             </button>
@@ -173,6 +188,7 @@ export function Header() {
       </header>
 
       {/* User Profile Modal */}
+      <SyncStatusPanel isOpen={syncPanelOpen} onClose={() => setSyncPanelOpen(false)} />
       <UserProfileModal
         isOpen={profileModalOpen}
         onClose={() => setProfileModalOpen(false)}

@@ -28,6 +28,7 @@ import {
   FieldPath,
   type DocumentData,
   type Unsubscribe,
+  type QueryConstraint,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import type { GlobalSaaSSettings, PricingPlan } from '../types';
@@ -35,6 +36,7 @@ import { logSyncEvent } from './syncLogger';
 import { CLIENT_ARRAY_FIELDS } from '../shared/syncMappings';
 import { changeHasIncrement, type FieldOp, type RecordChange } from '../sync/changeEngine';
 import type { OutboxEntry } from './syncQueue';
+import { HISTORY_COLLECTIONS, OPEN_CREDIT_STATUSES, mergeById } from '../sync/historyWindow';
 
 // Normalisation des noms de tables SQL/client vers les collections Firestore cibles
 export function normalizeFirestoreCollection(table: string): { collectionName: string; docId?: string; isSystemDoc?: boolean } {
@@ -112,14 +114,37 @@ export interface SubscriptionHandlers {
  * Abonne l'application aux collections de SA boutique (ou à tout, pour le super admin).
  * Le premier instantané vient du cache persistant (démarrage hors ligne), puis du serveur.
  */
-export function subscribeScopedCollections(scope: SyncScope, handlers: SubscriptionHandlers): () => void {
+/**
+ * Abonne l'application aux collections de SA boutique (ou à tout, pour le super admin).
+ * Le premier instantané vient du cache persistant (démarrage hors ligne), puis du serveur.
+ *
+ * Phase 3 : les collections volumineuses sont limitées à une fenêtre d'historique
+ * (`windows[field]` = date ISO de début, null = tout). Pour les ventes, les crédits encore
+ * ouverts sont écoutés en plus, quelle que soit leur date.
+ */
+export function subscribeScopedCollections(
+  scope: SyncScope,
+  handlers: SubscriptionHandlers,
+  windows: Record<string, string | null> = {},
+): () => void {
   const unsubscribers: Unsubscribe[] = [];
+  // Résultats partiels par champ (plusieurs requêtes pour un même champ : fenêtre + crédits ouverts).
+  const partials = new Map<string, Map<string, { records: Record<string, unknown>[]; fromCache: boolean; hasPendingWrites: boolean }>>();
 
-  const emit = (field: string, docs: { id: string; data: () => DocumentData }[], fromCache: boolean, hasPendingWrites: boolean) => {
+  const emitPartial = (field: string, key: string, docs: { id: string; data: () => DocumentData }[], fromCache: boolean, hasPendingWrites: boolean) => {
     const records = docs
       .map(d => mapDoc(d.id, d.data()))
       .filter(r => !r.deletedAt); // suppressions logiques : jamais affichées
-    handlers.onCollection({ field, records, fromCache, hasPendingWrites });
+    let parts = partials.get(field);
+    if (!parts) { parts = new Map(); partials.set(field, parts); }
+    parts.set(key, { records, fromCache, hasPendingWrites });
+    const all = Array.from(parts.values());
+    handlers.onCollection({
+      field,
+      records: all.length === 1 ? records : mergeById(all.map(p => p.records)),
+      fromCache: all.some(p => p.fromCache),
+      hasPendingWrites: all.some(p => p.hasPendingWrites),
+    });
   };
 
   const onErr = (field: string) => (err: { code?: string; message?: string }) => handlers.onError(field, err);
@@ -135,27 +160,38 @@ export function subscribeScopedCollections(scope: SyncScope, handlers: Subscript
     const colName = normalizeFirestoreCollection(field).collectionName;
     if (colName === 'system') continue;
 
-    if (scope.isSuperAdmin || GLOBAL_COLLECTIONS.has(colName)) {
-      unsubscribers.push(onSnapshot(collection(db, colName), { includeMetadataChanges: false }, snap => {
-        emit(field, snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+    if (GLOBAL_COLLECTIONS.has(colName)) {
+      unsubscribers.push(onSnapshot(collection(db, colName), snap => {
+        emitPartial(field, 'all', snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
       }, onErr(field)));
       continue;
     }
 
-    if (!scope.tenantId) continue; // utilisateur sans boutique : rien d'autre à lire
+    if (!scope.isSuperAdmin && !scope.tenantId) continue; // utilisateur sans boutique : rien d'autre à lire
 
-    if (colName === 'tenants') {
-      unsubscribers.push(onSnapshot(doc(db, 'tenants', scope.tenantId), snap => {
+    if (colName === 'tenants' && !scope.isSuperAdmin) {
+      unsubscribers.push(onSnapshot(doc(db, 'tenants', scope.tenantId as string), snap => {
         const docs = snap.exists() ? [{ id: snap.id, data: () => snap.data() as DocumentData }] : [];
-        emit(field, docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+        emitPartial(field, 'all', docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
       }, onErr(field)));
       continue;
     }
 
-    const q = query(collection(db, colName), where('tenantId', '==', scope.tenantId));
-    unsubscribers.push(onSnapshot(q, snap => {
-      emit(field, snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+    const base: QueryConstraint[] = scope.isSuperAdmin ? [] : [where('tenantId', '==', scope.tenantId)];
+    const history = HISTORY_COLLECTIONS[field];
+    const since = history ? windows[field] ?? null : null;
+    const constraints = since && history ? [...base, where(history.dateField, '>=', since)] : base;
+
+    unsubscribers.push(onSnapshot(query(collection(db, colName), ...constraints), snap => {
+      emitPartial(field, 'window', snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
     }, onErr(field)));
+
+    if (field === 'sales' && since) {
+      // Crédits ouverts : toujours chargés pour pouvoir encaisser les échéances anciennes.
+      unsubscribers.push(onSnapshot(query(collection(db, colName), ...base, where('creditStatus', 'in', OPEN_CREDIT_STATUSES)), snap => {
+        emitPartial(field, 'openCredit', snap.docs, snap.metadata.fromCache, snap.metadata.hasPendingWrites);
+      }, onErr(field)));
+    }
   }
 
   return () => {

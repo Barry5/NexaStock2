@@ -217,6 +217,25 @@ service cloud.firestore {
       allow delete: if isSuper() || (isTenantAdmin() && resource.data.tenantId == myTenant());
     }
 
+    // ---------- Télémétrie de synchronisation (phase 4) ----------
+    // État de chaque poste (document `<poste>_<compte>`) : écrit par ce compte, lu par les administrateurs.
+    match /deviceStatus/{deviceId} {
+      allow read: if isSuper() || (isTenantAdmin() && resource.data.tenantId == myTenant());
+      allow create, update: if hasLink()
+        && request.resource.data.uid == request.auth.uid
+        && (isSuper() || (hasTenant() && request.resource.data.tenantId == myTenant()))
+        && (resource == null || resource.data.uid == request.auth.uid);
+      allow delete: if isSuper();
+    }
+    // Événements d'erreur : ajout seul.
+    match /syncEvents/{eventId} {
+      allow read: if isSuper() || (isTenantAdmin() && resource.data.tenantId == myTenant());
+      allow create: if hasLink()
+        && request.resource.data.uid == request.auth.uid
+        && (isSuper() || (hasTenant() && request.resource.data.tenantId == myTenant()));
+      allow update, delete: if isSuper();
+    }
+
     // ---------- Compteurs de numérotation (factures / tickets) ----------
     match /counters/{counterId} {
       allow read: if isSuper() || (hasTenant() && counterId.matches(myTenant() + '_[A-Z]{2,5}_[0-9]{4}'));

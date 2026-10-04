@@ -249,11 +249,18 @@ export interface OutboxStats {
   dead: number;
   oldestPendingAt: string | null;
   oldestSentAt: string | null;
+  /** Phase 4 : dernier accusé de réception et délai moyen d'accusé (24 h). */
+  lastAckAt: string | null;
+  avgAckMs: number | null;
 }
 
 export async function getOutboxStats(ownerUid: string | null): Promise<OutboxStats> {
   const all = await getDb().outbox.where('status').anyOf(['pending', 'sent', 'dead']).toArray();
   const mine = all.filter(e => !ownerUid || e.ownerUid === ownerUid || e.ownerUid === null);
+  const done = (await getDb().outbox.where('status').equals('done').toArray())
+    .filter(e => (!ownerUid || e.ownerUid === ownerUid) && e.ackAt && e.sentAt);
+  const latencies = done.map(e => Date.parse(e.ackAt!) - Date.parse(e.sentAt!)).filter(ms => Number.isFinite(ms) && ms >= 0);
+  const lastAckAt = done.reduce<string | null>((acc, e) => (!acc || (e.ackAt || '') > acc ? e.ackAt : acc), null);
   const pending = mine.filter(e => e.status === 'pending');
   const sent = mine.filter(e => e.status === 'sent');
   const oldest = (list: OutboxEntry[]) => list.reduce<string | null>((acc, e) => (!acc || e.createdAt < acc ? e.createdAt : acc), null);
@@ -263,6 +270,8 @@ export async function getOutboxStats(ownerUid: string | null): Promise<OutboxSta
     dead: mine.filter(e => e.status === 'dead').length,
     oldestPendingAt: oldest(pending),
     oldestSentAt: sent.reduce<string | null>((acc, e) => (!acc || (e.sentAt || '') < acc ? e.sentAt : acc), null),
+    lastAckAt,
+    avgAckMs: latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null,
   };
 }
 

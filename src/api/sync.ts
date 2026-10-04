@@ -23,6 +23,7 @@ import {
 } from '../lib/firebaseSync';
 import { changeHasIncrement } from '../sync/changeEngine';
 import { logSyncEvent } from '../lib/syncLogger';
+import { recordSyncEvent } from '../lib/telemetry';
 
 export interface FlushContext {
   uid: string;
@@ -67,6 +68,21 @@ async function handleAck(entry: OutboxEntry, ctx: FlushContext, outcome: Promise
       return;
     }
     const status = await markFailed(entry.id!, message, cls === 'permanent');
+    // Phase 4 : événement central (file morte, refus des règles) pour la supervision.
+    const code = (err as { code?: string })?.code;
+    if (status === 'dead' || code === 'permission-denied') {
+      recordSyncEvent(
+        { uid: ctx.uid, userId: ctx.userId, tenantId: ctx.tenantId },
+        {
+          type: status === 'dead' ? 'dead_letter' : 'permission_denied',
+          table: entry.change.table,
+          recordId: entry.change.recordId,
+          operationId: entry.opId,
+          attempts: entry.attempts + 1,
+          error: message,
+        },
+      );
+    }
     logSyncEvent({
       tenantId: ctx.tenantId || 'global_system',
       tenantName: ctx.tenantId ? `Boutique ${ctx.tenantId}` : 'Système SaaS',

@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useDB } from '../../context';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   FileText, Calendar, Filter, Printer, Eye, X, CheckCircle2,
@@ -42,6 +43,15 @@ export default function SalesReportExportModal({
   const [filterDeliveryStatus, setFilterDeliveryStatus] = useState<string>('Tous');
   const [orientation, setOrientation] = useState<'landscape' | 'portrait'>('landscape');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+
+  // Phase 3 : les ventes anciennes ne sont chargées qu'à la demande ; un rapport
+  // couvrant une période antérieure étend automatiquement la fenêtre chargée.
+  const { ensureHistorySince, setHistoryDays } = useDB();
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!startDate) setHistoryDays('sales', null, false);
+    else ensureHistorySince('sales', `${startDate}T00:00:00.000Z`);
+  }, [isOpen, startDate, ensureHistorySince, setHistoryDays]);
 
   // Quick preset period updater
   const handleSelectPreset = (preset: PeriodPreset) => {

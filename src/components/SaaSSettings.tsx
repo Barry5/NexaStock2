@@ -44,6 +44,7 @@ import { useDB, useApp } from '../context';
 import { provisionUserAccount, sendResetEmail, authErrorMessage, MIN_PASSWORD_LENGTH } from '../lib/authService';
 import { newId, uuid } from '../lib/ids';
 import { compressImageFile } from '../lib/imageCompression';
+import { persistImage } from '../lib/imageStorage';
 import { getTenantPlanStatus, getRemainingDays, getActivePlan, futurePaymentProviders } from '../lib/subscriptionUtils.js';
 import { Modal } from './shared/Modal';
 import { ConfirmDialog } from './shared/ConfirmDialog';
@@ -220,7 +221,11 @@ export default function SaaSSettings() {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      setShopLogo(await compressImageFile(file, 400));
+      const dataUrl = await compressImageFile(file, 400);
+      setShopLogo(dataUrl);
+      // Phase 3 : envoi vers Cloud Storage ; seule l'URL sera enregistrée dans la boutique.
+      const { url, stored } = await persistImage(dataUrl, { tenantId: activeTenantId, kind: 'logos', entityId: activeTenantId });
+      if (stored) setShopLogo(current => (current === dataUrl ? url : current));
     } catch (err) {
       alert((err as Error).message);
     }

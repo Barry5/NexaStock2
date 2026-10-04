@@ -1,5 +1,7 @@
 import { type FormEvent, type ChangeEvent, type ReactNode } from 'react';
 import { compressImageFile } from '../../lib/imageCompression';
+import { persistImage } from '../../lib/imageStorage';
+import { useApp } from '../../context';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle } from 'lucide-react';
 import type { Product } from '../../types';
@@ -48,6 +50,7 @@ export default function ProductFormModal({
   errors = {},
   onClearError,
 }: ProductFormModalProps) {
+  const { activeTenantId } = useApp();
   const updateField = (field: string, value: any) => {
     setFormData({ ...formData, [field]: value });
     onClearError?.(field);
@@ -58,7 +61,14 @@ export default function ProductFormModal({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      updateField('image', await compressImageFile(file));
+      const dataUrl = await compressImageFile(file);
+      updateField('image', dataUrl);
+      // Phase 3 : envoi vers Cloud Storage ; seule l'URL sera enregistrée dans le produit.
+      const { url, stored } = await persistImage(dataUrl, { tenantId: activeTenantId, kind: 'products', entityId: editingProduct?.id });
+      if (stored) {
+        // Mise à jour fonctionnelle : ne pas écraser ce qui a été saisi pendant l'envoi.
+        setFormData((prev: Record<string, unknown>) => (prev.image === dataUrl ? { ...prev, image: url } : prev));
+      }
     } catch (err) {
       alert((err as Error).message);
     }

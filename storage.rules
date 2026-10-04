@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// NexaStock — règles Cloud Storage (phase 3 : images produits et logos).
+//
+// Limite connue : les règles Storage ne peuvent pas lire une base Firestore nommée
+// (cross-service limité à la base « (default) ») ; l'appartenance à la boutique ne peut donc
+// pas être vérifiée ici. Mesures compensatoires : utilisateur authentifié obligatoire, images
+// uniquement, 1 Mo maximum, aucun remplacement ni suppression (noms de fichiers UUID).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /tenants/{tenantId}/{kind}/{entityId}/{fileName} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && kind in ['products', 'logos']
+        && request.resource.size < 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow update, delete: if false;
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

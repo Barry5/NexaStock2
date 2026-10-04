@@ -146,3 +146,28 @@ describe('Inscription d\'une nouvelle boutique', () => {
     await assertFails(batch.commit());
   });
 });
+
+describe('Phase 4 : télémétrie', () => {
+  it('un poste publie son état pour sa boutique', async () => {
+    const db = as('authAv', 'vendeur@a.test');
+    await assertSucceeds(setDoc(doc(db, 'deviceStatus/dev1_authAv'), { uid: 'authAv', tenantId: 'tA', pending: 0, sent: 0, dead: 0 }));
+  });
+  it('un poste ne publie pas pour une autre boutique ni pour un autre compte', async () => {
+    const db = as('authAv', 'vendeur@a.test');
+    await assertFails(setDoc(doc(db, 'deviceStatus/dev1_x'), { uid: 'authAv', tenantId: 'tB', pending: 0 }));
+    await assertFails(setDoc(doc(db, 'deviceStatus/dev1_y'), { uid: 'autre', tenantId: 'tA', pending: 0 }));
+  });
+  it('un vendeur ne lit pas la télémétrie ; le propriétaire lit celle de sa boutique', async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), 'deviceStatus/devA_authAv'), { uid: 'authAv', tenantId: 'tA', pending: 1 });
+    });
+    await assertFails(getDoc(doc(as('authAv', 'vendeur@a.test'), 'deviceStatus/devA_authAv')));
+    await assertSucceeds(getDoc(doc(as('authA', 'owner@a.test'), 'deviceStatus/devA_authAv')));
+    await assertFails(getDoc(doc(as('authB', 'owner@b.test'), 'deviceStatus/devA_authAv')));
+  });
+  it('les événements de synchronisation sont en ajout seul', async () => {
+    const db = as('authAv', 'vendeur@a.test');
+    await assertSucceeds(setDoc(doc(db, 'syncEvents/e1'), { uid: 'authAv', tenantId: 'tA', type: 'dead_letter' }));
+    await assertFails(updateDoc(doc(as('authA', 'owner@a.test'), 'syncEvents/e1'), { type: 'x' }));
+  });
+});

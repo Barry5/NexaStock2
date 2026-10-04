@@ -1,4 +1,4 @@
-import { useMemo, useState, memo } from 'react';
+import { useMemo, useState, memo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingBag, Package, AlertTriangle,
@@ -143,6 +143,14 @@ function DashboardInner() {
   const [pdfStartDate, setPdfStartDate] = useState('');
   const [pdfEndDate, setPdfEndDate] = useState('');
   const [pdfPaymentMethod, setPdfPaymentMethod] = useState<'Tous' | string>('Tous');
+
+  // Phase 3 : un export couvrant une période ancienne charge l'historique nécessaire.
+  const { ensureHistorySince, setHistoryDays } = useDB();
+  useEffect(() => {
+    if (!isExportModalOpen) return;
+    if (!pdfStartDate) setHistoryDays('sales', null, false);
+    else ensureHistorySince('sales', `${pdfStartDate}T00:00:00.000Z`);
+  }, [isExportModalOpen, pdfStartDate, ensureHistorySince, setHistoryDays]);
 
   const filteredSalesForReport = useMemo(() =>
     tenantSales.filter(sale => {

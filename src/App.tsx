@@ -18,6 +18,7 @@ import { useAvailableModules, resetModuleCache } from './hooks/useModules';
 import { Header } from './components/Layout/Header';
 import UserProfileModal from './components/UserProfileModal';
 import SaaSAuth from './components/SaaSAuth';
+import { SyncStatusPanel } from './components/sync/SyncStatusPanel';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 
 const LazyDashboard = lazyWithRetry(() => import('./components/Dashboard'), 'Dashboard');
@@ -39,8 +40,9 @@ function AppShell() {
     db, isSyncing, syncError, isOnline, lastCacheTime, notifications,
     addNotification, handleUpdateDb, handleProductsUpdate, handleAddSale,
     handleUpdateExpenses, handleUpdateLoans, handleUpdateCustomers, handleUpdateSuppliers,
-    handleSyncFromServer
+    handleSyncFromServer, connectionState, outboxStats
   } = useDB();
+  const [showSyncPanel, setShowSyncPanel] = useState(false);
 
   const {
     isLoggedIn, setIsLoggedIn, activeTenantId, setActiveTenantId,
@@ -273,10 +275,17 @@ function AppShell() {
             <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-blue-400' : 'text-gray-400'}`} />
             <span className="hidden xs:inline">{isSyncing ? 'Synchro...' : 'Sync'}</span>
           </button>
-          <div className="flex items-center gap-1 bg-gray-950 px-2 py-1.5 rounded-lg border border-gray-800 text-[10px] font-mono">
-            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+          <button
+            onClick={() => setShowSyncPanel(true)}
+            className="flex items-center gap-1 bg-gray-950 px-2 py-1.5 rounded-lg border border-gray-800 text-[10px] font-mono"
+            title="État de la synchronisation"
+          >
+            <span className={`w-2 h-2 rounded-full ${connectionState === 'online' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
             <Cloud className="w-3 h-3 text-gray-400" />
-          </div>
+            {outboxStats.pending + outboxStats.sent + outboxStats.dead > 0 && (
+              <span className={outboxStats.dead > 0 ? 'text-red-300' : 'text-amber-300'}>{outboxStats.pending + outboxStats.sent + outboxStats.dead}</span>
+            )}
+          </button>
           {activeUser && (
             <button
               onClick={() => setShowProfileModal(true)}
@@ -782,6 +791,8 @@ function AppShell() {
           </div>
         )}
       </AnimatePresence>
+
+      <SyncStatusPanel isOpen={showSyncPanel} onClose={() => setShowSyncPanel(false)} />
 
       {/* USER PROFILE & SECURITY MODAL */}
       <UserProfileModal

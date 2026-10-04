@@ -29,6 +29,7 @@ import {
   computeTenantSyncStatuses,
   logSyncEvent
 } from '../../lib/syncLogger';
+import DeviceMonitor from './DeviceMonitor';
 
 interface AdminSyncOverviewProps {
   overview: SyncOverview | null;
@@ -163,6 +164,8 @@ export default function AdminSyncOverview({ overview, loading, error, onRefresh 
       exit={{ opacity: 0, y: -5 }}
       className="space-y-6"
     >
+      {/* Phase 4 : supervision réelle des postes (deviceStatus / syncEvents) */}
+      <DeviceMonitor />
       {/* 1. Header & Live Indicator */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between bg-gradient-to-r from-gray-950 via-gray-900 to-gray-950 p-5 rounded-2xl border border-gray-800">
         <div>
